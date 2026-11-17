@@ -9,9 +9,7 @@
 #include <WiFi.h>
 #include <WiFiClient.h>
 
-#ifndef MODO_ATAQUE
-#define MODO_ATAQUE 0   // fallback: normal, caso platformio.ini não defina a flag
-#endif
+#define MODO_ATAQUE 1   // fallback: normal, caso platformio.ini não defina a flag
 
 // ---------------------------- CONFIGURAÇÃO DE REDE ---------------------------
 const char* WIFI_SSID  = "ssid";
@@ -34,11 +32,11 @@ const char* WIFI_SENHA = "pass";
 // "normal" vai parecer uma varredura. Prefira sempre um host com um serviço
 // realmente escutando.
 // ------------------------------------------------------------------------------
-IPAddress SERVIDOR_NORMAL(192, 168, 1, 107);
+IPAddress SERVIDOR_NORMAL(192, 168, 137, 1);
 const uint16_t PORTA_SERVIDOR_NORMAL = 8500;
 
-// Prefixo da sub-rede usada para sortear alvos no modo MALICIOSO
-const uint8_t SUBNET_A = 192, SUBNET_B = 168, SUBNET_C = 1;
+// Alvos do modo MALICIOSO
+const IPAddress GATEWAY_HOTSPOT(192, 168, 137, 1);
 
 const uint16_t PORTAS_COMUNS[] = {21, 22, 23, 25, 53, 80, 110, 143, 443, 445,
                                    1883, 3306, 3389, 8080, 8883};
@@ -84,7 +82,14 @@ void executarPassoNormal() {
 
 // Padrões suspeitos ALEATORIZADOS a cada execução do firmware.
 void executarPassoMalicioso() {
-    IPAddress alvo(SUBNET_A, SUBNET_B, SUBNET_C, 2 + (esp_random() % 250));
+    IPAddress alvo;
+    // Sub-tipo 1 (brute-force): sempre o notebook. Sub-tipo 0: metade notebook,
+    // metade um bloco fora da sub-rede, que obriga o pacote a passar pelo gateway.
+    if (subTipoAtaqueEscolhido == 1 || esp_random() % 2 == 0) {
+        alvo = GATEWAY_HOTSPOT;
+    } else {
+        alvo = IPAddress(10, 77, 0, 2 + (esp_random() % 250));
+    }
 
     uint16_t porta;
     if (subTipoAtaqueEscolhido == 1) {

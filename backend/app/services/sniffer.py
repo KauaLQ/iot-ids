@@ -19,7 +19,7 @@ import time
 from app import config
 
 try:
-    from scapy.all import sniff, IP, TCP, UDP
+    from scapy.all import sniff, IP, TCP, UDP, conf
     SCAPY_DISPONIVEL = True
 except Exception:
     SCAPY_DISPONIVEL = False
@@ -32,6 +32,28 @@ SYN, ACK, FIN, RST = 0x02, 0x10, 0x01, 0x04
 
 _lock = threading.Lock()
 _flows: dict = {}
+
+_stats = {"vistos": 0, "ignorados_proto": 0, "ignorados_subnet": 0, "aceitos": 0}
+
+
+def _resolver_interface():
+    """Retorna (iface, descricao). iface=None significa 'ainda não encontrada'
+    (ex.: hotspot desligado)."""
+    if config.SNIFFER_IFACE:
+        return config.SNIFFER_IFACE, f"nome '{config.SNIFFER_IFACE}'"
+    if not config.SNIFFER_IFACE_IP:
+        return conf.iface, f"padrão do Scapy ({conf.iface})"
+    try:
+        conf.ifaces.reload()   # relê os adaptadores (o hotspot pode ter ligado depois do import)
+    except Exception:
+        pass
+    alvo = config.SNIFFER_IFACE_IP
+    for i in conf.ifaces.values():
+        ips = set(getattr(i, "ips", {}).get(4, [])) | {getattr(i, "ip", None)}
+        if alvo in ips:
+            nome = getattr(i, "description", None) or getattr(i, "name", str(i))
+            return i, f"IP {alvo} -> {nome}"
+    return None, f"nenhuma interface com IP {alvo}"
 
 
 def _endpoints(pkt):
@@ -71,15 +93,15 @@ PROTOCOLOS_SUPORTADOS = {1, 6, 17}  # ICMP, TCP, UDP — o resto (IGMP, etc.) n�
 def _processar_pacote(pkt):
     if IP not in pkt:
         return
+    _stats["vistos"] += 1
     ip = pkt[IP]
     if ip.proto not in PROTOCOLOS_SUPORTADOS:
-        # Antes: pacotes IGMP/outros caíam no .get(proto_num, 'tcp') e eram
-        # gravados como se fossem TCP de verdade, virando ruído categórico
-        # para o modelo. Agora são simplesmente ignorados, como o Zeek faz
-        # (ele não trata esse tráfego de controle como uma "conexão").
+        _stats["ignorados_proto"] += 1
         return
     if not (ip.src.startswith(config.SUBNET_PREFIX) or ip.dst.startswith(config.SUBNET_PREFIX)):
+        _stats["ignorados_subnet"] += 1
         return
+    _stats["aceitos"] += 1
 
     agora = time.time()
     proto, ep_src, ep_dst = _endpoints(pkt)
@@ -141,8 +163,16 @@ def _estimar_conn_state(flow):
 
 
 def _loop_flush(stop_event: threading.Event):
+    ultimo_log = 0.0
     while not stop_event.is_set():
         time.sleep(INTERVALO_FLUSH)
+        if time.time() - ultimo_log > 10:
+            ultimo_log = time.time()
+            print(f"[SNIFFER] stats={_stats} flows_ativos={len(_flows)}")
+            if _stats["vistos"] == 0:
+                print("[SNIFFER] AVISO: nenhum pacote IP visto (interface errada, hotspot sem clientes ou Npcap).")
+            elif _stats["aceitos"] == 0:
+                print(f"[SNIFFER] AVISO: pacotes vistos, mas fora de {config.SUBNET_PREFIX}*")
         agora = time.time()
         linhas = []
         with _lock:
@@ -181,17 +211,27 @@ def iniciar_sniffer_em_background(stop_event: threading.Event) -> threading.Thre
     threading.Thread(target=_loop_flush, args=(stop_event,), daemon=True).start()
 
     def _run_sniff():
-        try:
-            kwargs = dict(filter="ip", prn=_processar_pacote, store=False,
-                          stop_filter=lambda _: stop_event.is_set())
-            if config.SNIFFER_IFACE:
-                kwargs["iface"] = config.SNIFFER_IFACE
-            sniff(**kwargs)
-        except PermissionError:
-            print("[SNIFFER] Permissão negada. Rode o backend como Administrador (Windows) "
-                  "ou com sudo (Linux/macOS).")
-        except Exception as e:
-            print(f"[SNIFFER] Erro ao capturar pacotes: {e}")
+        avisou = False
+        while not stop_event.is_set():
+            iface, desc = _resolver_interface()
+            if iface is None:
+                if not avisou:
+                    print(f"[SNIFFER] Aguardando interface: {desc}. Ligue o Hotspot Móvel "
+                          f"(tentando de novo a cada 5s).")
+                    avisou = True
+                stop_event.wait(5)
+                continue
+            avisou = False
+            print(f"[SNIFFER] Capturando em: {desc} | filtro de sub-rede: {config.SUBNET_PREFIX}*")
+            try:
+                sniff(iface=iface, filter="ip", prn=_processar_pacote, store=False,
+                      stop_filter=lambda _: stop_event.is_set())
+            except PermissionError:
+                print("[SNIFFER] Permissão negada. Rode o backend como Administrador.")
+                return
+            except Exception as e:
+                print(f"[SNIFFER] Captura interrompida ({e}). Tentando de novo em 5s...")
+            stop_event.wait(5)
 
     thread = threading.Thread(target=_run_sniff, daemon=True)
     thread.start()

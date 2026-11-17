@@ -24,12 +24,15 @@ DEBUG_JSON_PATH = Path(os.environ.get(
     "IOT_IDS_DEBUG_JSON_PATH", PROJECT_ROOT / "backend" / "runtime_data" / "status_debug.json"
 ))
 
-# Prefixo de sub-rede considerado "local" pelo sniffer (ajuste para a sua LAN)
-SUBNET_PREFIX = os.environ.get("IOT_IDS_SUBNET_PREFIX", "192.168.")
+# Prefixo de sub-rede considerado "local" pelo sniffer (hotspot do Windows)
+SUBNET_PREFIX = os.environ.get("IOT_IDS_SUBNET_PREFIX", "192.168.137.")
 
-# Interface de captura explícita (opcional). Deixe None para o Scapy escolher
-# automaticamente, ou defina para o nome exato (ex.: "Wi-Fi", "Ethernet", "eth0").
+# Seleção da interface de captura, em ordem de prioridade:
+#   1) IOT_IDS_SNIFFER_IFACE     -> nome exato (ex.: "Wi-Fi")
+#   2) IOT_IDS_SNIFFER_IFACE_IP  -> acha a interface que possui este IPv4
+#   3) padrão do Scapy (só se IFACE_IP for vazio)
 SNIFFER_IFACE = os.environ.get("IOT_IDS_SNIFFER_IFACE") or None
+SNIFFER_IFACE_IP = os.environ.get("IOT_IDS_SNIFFER_IFACE_IP", "192.168.137.1") or None
 
 # Liga/desliga o sniffer real (útil para testar o backend sem admin/Npcap,
 # usando apenas o endpoint de ingestão manual ou um conn_live.log já existente)
