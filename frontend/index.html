@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SOC IoT - Monitoramento IA</title>
+    <style>
+        :root {
+            --bg-main: #0f172a; --bg-card: #1e293b; --text-main: #f8fafc;
+            --text-muted: #94a3b8; --green: #10b981; --red: #ef4444;
+            --amber: #f59e0b; --blue: #3b82f6; --border: #334155;
+        }
+        * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Segoe UI', system-ui, sans-serif; }
+        body { background-color: var(--bg-main); color: var(--text-main); padding: 20px; }
+        header { display: flex; justify-content: space-between; align-items: center;
+            background: var(--bg-card); padding: 16px 24px; border-radius: 10px;
+            border: 1px solid var(--border); margin-bottom: 20px; }
+        .header-title h1 { font-size: 1.4rem; letter-spacing: 0.5px; }
+        .header-title p { color: var(--text-muted); font-size: 0.85rem; margin-top: 4px; }
+        .status-badge { padding: 10px 22px; border-radius: 8px; font-weight: 800;
+            font-size: 1.1rem; letter-spacing: 1px; text-transform: uppercase; }
+        .status-normal { background: rgba(16, 185, 129, 0.15); color: var(--green); border: 2px solid var(--green); }
+        .status-attack { background: rgba(239, 68, 68, 0.2); color: var(--red); border: 2px solid var(--red);
+            animation: pulse 1.2s infinite; }
+        .status-erro { background: rgba(245, 158, 11, 0.2); color: var(--amber); border: 2px solid var(--amber); }
+        @keyframes pulse { 0% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.6); }
+            70% { box-shadow: 0 0 0 12px rgba(239, 68, 68, 0); } 100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0); } }
+        .kpi-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 16px; margin-bottom: 20px; }
+        .card { background: var(--bg-card); padding: 18px; border-radius: 10px; border: 1px solid var(--border); }
+        .kpi-label { color: var(--text-muted); font-size: 0.85rem; text-transform: uppercase; }
+        .kpi-value { font-size: 1.9rem; font-weight: 700; margin-top: 6px; }
+        .main-grid { display: grid; grid-template-columns: 2fr 1fr; gap: 20px; margin-bottom: 20px; }
+        @media (max-width: 950px) { .main-grid { grid-template-columns: 1fr; } }
+        h2 { font-size: 1.05rem; margin-bottom: 14px; color: #e2e8f0; border-bottom: 1px solid var(--border); padding-bottom: 8px; }
+        table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
+        th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--border); }
+        th { color: var(--text-muted); font-weight: 600; font-size: 0.8rem; text-transform: uppercase; }
+        .tag { padding: 4px 8px; border-radius: 4px; font-weight: 700; font-size: 0.78rem; display: inline-block; }
+        .tag-benigno { background: rgba(16, 185, 129, 0.15); color: var(--green); }
+        .tag-maligno { background: rgba(239, 68, 68, 0.2); color: var(--red); }
+        .tag-portscan { background: rgba(245, 158, 11, 0.2); color: var(--amber); }
+        .tag-bruteforce { background: rgba(59, 130, 246, 0.25); color: #60a5fa; }
+        .dist-row { margin-bottom: 12px; }
+        .dist-header { display: flex; justify-content: space-between; font-size: 0.85rem; margin-bottom: 4px; }
+        .dist-bar-bg { background: #0f172a; height: 10px; border-radius: 5px; overflow: hidden; }
+        .dist-bar-fill { background: var(--blue); height: 100%; transition: width 0.4s ease; }
+        .llm-box { background: #172033; border-left: 4px solid var(--blue); padding: 14px; border-radius: 6px;
+            font-size: 0.92rem; line-height: 1.5; color: #cbd5e1; white-space: pre-line; }
+        #config-api { position: fixed; bottom: 12px; right: 12px; font-size: 0.75rem; color: var(--text-muted); }
+        #config-api input { background: var(--bg-card); color: var(--text-main); border: 1px solid var(--border);
+            border-radius: 4px; padding: 4px 8px; width: 220px; }
+    </style>
+</head>
+<body>
+
+    <header>
+        <div class="header-title">
+            <h1>🛡️ IDS IoT — Monitoramento via IA</h1>
+            <p>Última leitura: <span id="lbl-atualizacao">Aguardando backend...</span></p>
+        </div>
+        <div id="badge-status" class="status-badge status-normal">CARREGANDO</div>
+    </header>
+
+    <section class="kpi-grid">
+        <div class="card"><div class="kpi-label">Fluxos na Janela Atual</div><div id="kpi-total" class="kpi-value">0</div></div>
+        <div class="card"><div class="kpi-label">Fluxos Maliciosos Detectados</div><div id="kpi-ataques" class="kpi-value" style="color: var(--red);">0</div></div>
+        <div class="card"><div class="kpi-label">Dispositivos Comprometidos</div><div id="kpi-dispositivos" class="kpi-value" style="color: var(--amber);">0</div></div>
+    </section>
+
+    <section class="main-grid">
+        <div class="card">
+            <h2>🚨 Dispositivos Comprometidos / Atacantes Ativos</h2>
+            <table>
+                <thead><tr><th>IP Comprometido</th><th>Tipo de Ataque</th><th>IP Vítima:Porta</th><th>Fluxos</th><th>Confiança IA</th><th>Último Alerta</th></tr></thead>
+                <tbody id="tabela-atacantes"><tr><td colspan="6" style="color: var(--text-muted); text-align:center;">Nenhum ataque detectado no momento.</td></tr></tbody>
+            </table>
+        </div>
+        <div style="display: flex; flex-direction: column; gap: 20px;">
+            <div class="card"><h2>📊 Distribuição por Tipo de Tráfego</h2><div id="painel-distribuicao"></div></div>
+            <div class="card"><h2>🤖 Relatório de Incidente</h2><div id="painel-llm" class="llm-box">Aguardando o motor de IA...</div></div>
+        </div>
+    </section>
+
+    <section class="card">
+        <h2>📡 Feed de Conexões em Tempo Real (Últimos 20 Fluxos)</h2>
+        <table>
+            <thead><tr><th>Horário</th><th>IP Origem</th><th>IP Destino</th><th>Porta</th><th>Proto</th><th>Status</th><th>Tipo Detectado</th><th>Confiança</th></tr></thead>
+            <tbody id="tabela-feed"></tbody>
+        </table>
+    </section>
+
+    <div id="config-api">
+        API: <input id="input-api-base" type="text" placeholder="http://localhost:8000">
+    </div>
+
+    <script>
+        // URL do backend FastAPI. Por padrão assume localhost:8000; pode ser
+        // ajustado em tempo real pelo campo no canto da tela (fica salvo
+        // apenas em memória da aba, sem usar localStorage).
+        let API_BASE = 'http://localhost:8000';
+        document.getElementById('input-api-base').value = API_BASE;
+        document.getElementById('input-api-base').addEventListener('change', (e) => {
+            API_BASE = e.target.value.replace(/\/$/, '');
+        });
+
+        function obterClasseTag(tipo) {
+            const t = (tipo || '').toLowerCase();
+            if (t === 'benigno') return 'tag-benigno';
+            if (t.includes('portscan')) return 'tag-portscan';
+            if (t.includes('brute')) return 'tag-bruteforce';
+            return 'tag-maligno';
+        }
+
+        async function atualizarDashboard() {
+            try {
+                const resposta = await fetch(API_BASE + '/api/status?t=' + Date.now());
+                if (!resposta.ok) return;
+                const dados = await resposta.json();
+
+                document.getElementById('lbl-atualizacao').textContent = dados.ultima_atualizacao || '-';
+                const badge = document.getElementById('badge-status');
+                badge.textContent = dados.status_rede || 'DESCONHECIDO';
+                badge.className = 'status-badge ' + (
+                    dados.status_rede === 'SOB ATAQUE' ? 'status-attack' :
+                    dados.status_rede === 'ERRO_MODELO' ? 'status-erro' : 'status-normal'
+                );
+
+                const atacantes = dados.dispositivos_atacantes || [];
+                document.getElementById('kpi-total').textContent = dados.total_fluxos_analisados ?? 0;
+                document.getElementById('kpi-ataques').textContent = dados.total_ataques_detectados ?? 0;
+                document.getElementById('kpi-dispositivos').textContent = atacantes.length;
+
+                const tbodyAtacantes = document.getElementById('tabela-atacantes');
+                tbodyAtacantes.innerHTML = atacantes.length === 0
+                    ? '<tr><td colspan="6" style="color: var(--green); text-align:center;">✔ Rede íntegra.</td></tr>'
+                    : atacantes.map(item => `
+                        <tr>
+                            <td style="font-weight:700; color:#f87171;">${item.ip_dispositivo}</td>
+                            <td><span class="tag ${obterClasseTag(item.tipo_ataque)}">${item.tipo_ataque}</span></td>
+                            <td>${item.ip_vitima} : <strong>${item.porta_vitima}</strong></td>
+                            <td>${item.fluxos_maliciosos}</td>
+                            <td>${item.confianca_ia_pct}%</td>
+                            <td>${item.ultimo_alerta}</td>
+                        </tr>`).join('');
+
+                const dist = dados.distribuicao_trafego || {};
+                const totalFluxos = dados.total_fluxos_analisados || 1;
+                document.getElementById('painel-distribuicao').innerHTML = Object.entries(dist).map(([tipo, qtd]) => {
+                    const pct = Math.round((qtd / totalFluxos) * 100);
+                    const corBarra = tipo === 'Benigno' ? 'var(--green)' : 'var(--red)';
+                    return `<div class="dist-row"><div class="dist-header"><span><strong>${tipo}</strong></span>
+                        <span>${qtd} fluxos (${pct}%)</span></div>
+                        <div class="dist-bar-bg"><div class="dist-bar-fill" style="width:${pct}%; background:${corBarra};"></div></div></div>`;
+                }).join('');
+
+                if (dados.relatorio_llm) document.getElementById('painel-llm').textContent = dados.relatorio_llm;
+
+                const feed = dados.feed_tempo_real || [];
+                document.getElementById('tabela-feed').innerHTML = feed.map(f => `
+                    <tr>
+                        <td>${f.horario || '-'}</td>
+                        <td>${f['id.orig_h'] || '-'}</td>
+                        <td>${f['id.resp_h'] || '-'}</td>
+                        <td>${f['id.resp_p'] ?? '-'}</td>
+                        <td>${(f.proto || '').toUpperCase()}</td>
+                        <td><span class="tag ${f.status_geral === 'BENIGNO' ? 'tag-benigno' : 'tag-maligno'}">${f.status_geral}</span></td>
+                        <td><span class="tag ${obterClasseTag(f.tipo_trafego)}">${f.tipo_trafego}</span></td>
+                        <td>${f.confianca_ia ?? 0}%</td>
+                    </tr>`).join('');
+
+            } catch (erro) {
+                console.debug("Aguardando backend responder...", erro);
+            }
+        }
+
+        atualizarDashboard();
+        setInterval(atualizarDashboard, 2000);
+    </script>
+</body>
+</html>

@@ -1,0 +1,22 @@
+# Dados e modelos (pesados / gerados — não versionar)
+ml/datasets/*
+!ml/datasets/.gitkeep
+ml/models/*.joblib
+
+# Dados de runtime do backend (gerados em tempo de execução)
+backend/runtime_data/*
+!backend/runtime_data/.gitkeep
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.egg-info/
+
+# Frontend (quando migrar para Vite/React)
+frontend/node_modules/
+frontend/dist/
+
+# Ambiente
+.env
