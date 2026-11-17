@@ -1,0 +1,26 @@
+@import "tailwindcss";
+
+/* Paleta inspirada em consoles corporativos de segurança:
+   barra superior escura, fundo cinza claro, cards brancos, destaque laranja. */
+@theme {
+  --font-sans: "Inter Variable", "Segoe UI", system-ui, sans-serif;
+  --color-bar: #1b1f23;
+  --color-page: #e8ebee;
+  --color-line: #d3d8de;
+  --color-ink: #1f2933;
+  --color-soft: #66727f;
+  --color-accent: #f29b1d;
+  --color-blue: #2b8fd1;
+  --color-ok: #278a63;
+  --color-warn: #c98200;
+  --color-bad: #c94545;
+}
+
+body { background: var(--color-page); color: var(--color-ink); font-family: var(--font-sans); letter-spacing: normal; }
+:focus-visible { outline: 2px solid var(--color-blue); outline-offset: 2px; }
+.Toastify__toast { font-family: var(--font-sans); border-radius: 4px; }
+@media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
+
+/* Esconde barras de rolagem mantendo o conteúdo acessível (só relevante em telas estreitas) */
+.sem-barra { scrollbar-width: none; }
+.sem-barra::-webkit-scrollbar { display: none; }
