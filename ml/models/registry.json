@@ -1,0 +1,12 @@
+{
+  "ativo": "v1",
+  "historico": [],
+  "versoes": {
+    "v1": {
+      "criado_em": "2026-11-15T14:59:59",
+      "nota": "Importado de motor_ia_ids_iot.joblib (sem métricas registradas)",
+      "f1_macro": null,
+      "accuracy": null
+    }
+  }
+}

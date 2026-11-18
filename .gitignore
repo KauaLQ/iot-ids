@@ -1,9 +1,13 @@
 # Dados e modelos (pesados / gerados — não versionar)
 ml/datasets/*
 !ml/datasets/.gitkeep
+!ml/datasets/coletas/
+ml/datasets/coletas/*
+!ml/datasets/coletas/.gitkeep
 ml/models/*.joblib
+ml/models/*.pkl
 
-# Dados de runtime do backend (gerados em tempo de execução)
+# Dados de runtime do backend
 backend/runtime_data/*
 !backend/runtime_data/.gitkeep
 

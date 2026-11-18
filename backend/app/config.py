@@ -1,56 +1,63 @@
 # ==============================================================================
 # CONFIGURAÇÃO CENTRAL — todos os caminhos do projeto num só lugar.
-# 100% baseado em pathlib: funciona igual em Windows, Linux ou macOS.
-# Qualquer caminho pode ser sobrescrito por variável de ambiente, sem editar código.
+# 100% pathlib; qualquer valor pode ser sobrescrito por variável de ambiente.
 # ==============================================================================
 import os
 from pathlib import Path
 
-# backend/app/config.py -> parents[0]=app, [1]=backend, [2]=raiz do projeto
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
-MODEL_PATH = Path(os.environ.get(
-    "IOT_IDS_MODEL_PATH", PROJECT_ROOT / "ml" / "models" / "motor_ia_ids_iot.joblib"
-))
+
+def _float(nome, padrao):
+    return float(os.environ.get(nome, padrao))
+
+
+def _bool(nome, padrao):
+    return os.environ.get(nome, str(padrao)).lower() == "true"
+
+
+# Modelo: por padrão vem do registro de versões (ml/models/registry.json).
+# Defina IOT_IDS_MODEL_PATH só para FORÇAR um arquivo específico (ignora o registro).
+MODEL_PATH_OVERRIDE = Path(os.environ["IOT_IDS_MODEL_PATH"]) if os.environ.get("IOT_IDS_MODEL_PATH") else None
 
 CONN_LOG_PATH = Path(os.environ.get(
-    "IOT_IDS_CONN_LOG_PATH", PROJECT_ROOT / "backend" / "runtime_data" / "conn_live.log"
-))
+    "IOT_IDS_CONN_LOG_PATH", PROJECT_ROOT / "backend" / "runtime_data" / "conn_live.log"))
+COLETAS_DIR = Path(os.environ.get(
+    "IOT_IDS_COLETAS_DIR", PROJECT_ROOT / "ml" / "datasets" / "coletas"))
 
-# Debug opcional: também grava um snapshot em JSON no disco (útil para inspecionar
-# fora da API). Desligado por padrão porque a API já serve tudo em memória.
-WRITE_DEBUG_JSON = os.environ.get("IOT_IDS_WRITE_DEBUG_JSON", "false").lower() == "true"
+WRITE_DEBUG_JSON = _bool("IOT_IDS_WRITE_DEBUG_JSON", False)
 DEBUG_JSON_PATH = Path(os.environ.get(
-    "IOT_IDS_DEBUG_JSON_PATH", PROJECT_ROOT / "backend" / "runtime_data" / "status_debug.json"
-))
+    "IOT_IDS_DEBUG_JSON_PATH", PROJECT_ROOT / "backend" / "runtime_data" / "status_debug.json"))
 
-# Prefixo de sub-rede considerado "local" pelo sniffer (hotspot do Windows)
+# ------------------------------- SNIFFER --------------------------------------
 SUBNET_PREFIX = os.environ.get("IOT_IDS_SUBNET_PREFIX", "192.168.137.")
-
-# Seleção da interface de captura, em ordem de prioridade:
-#   1) IOT_IDS_SNIFFER_IFACE     -> nome exato (ex.: "Wi-Fi")
-#   2) IOT_IDS_SNIFFER_IFACE_IP  -> acha a interface que possui este IPv4
-#   3) padrão do Scapy (só se IFACE_IP for vazio)
 SNIFFER_IFACE = os.environ.get("IOT_IDS_SNIFFER_IFACE") or None
 SNIFFER_IFACE_IP = os.environ.get("IOT_IDS_SNIFFER_IFACE_IP", "192.168.137.1") or None
+ENABLE_SNIFFER = _bool("IOT_IDS_ENABLE_SNIFFER", True)
 
-# Liga/desliga o sniffer real (útil para testar o backend sem admin/Npcap,
-# usando apenas o endpoint de ingestão manual ou um conn_live.log já existente)
-ENABLE_SNIFFER = os.environ.get("IOT_IDS_ENABLE_SNIFFER", "true").lower() == "true"
+# Ignorar broadcast/multicast (SSDP, mDNS, IGMP...)? O Zeek NÃO ignora; padrão false
+# para manter a distribuição igual à do IoT-23. Se o ruído do Windows atrapalhar
+# (e você retreinar com seus dados), pode ligar — o importante é treinar e inferir igual.
+IGNORAR_MULTICAST = _bool("IOT_IDS_IGNORAR_MULTICAST", False)
 
-# ------------------------------------------------------------------------------
-# FILTROS ANTI-FALSO-POSITIVO (camada de pós-processamento, não mexe no modelo)
-# ------------------------------------------------------------------------------
-# Só conta um fluxo como MALIGNO se a confiança do modelo for >= este valor.
-# Evita alarmes em cima de previsões "quase no chute" (ex.: 55% de confiança).
-CONFIANCA_MINIMA_ATAQUE = float(os.environ.get("IOT_IDS_CONFIANCA_MINIMA", "75.0"))
+# Timeouts de flow (segundos). Zeek usa 5 / 5 / 300 / 60; aqui os dois últimos são
+# menores para o dashboard não ficar com minutos de atraso. Trade-off documentado no README.
+TIMEOUT_TCP_TENTATIVA = _float("IOT_IDS_TIMEOUT_TCP_TENTATIVA", 5.0)   # SYN sem SYN-ACK (Zeek tcp_attempt_delay=5)
+TIMEOUT_TCP_FECHADO = _float("IOT_IDS_TIMEOUT_TCP_FECHADO", 2.0)       # após FIN/FIN ou RST
+TIMEOUT_TCP_ATIVO = _float("IOT_IDS_TIMEOUT_TCP_ATIVO", 30.0)          # conexão aberta ociosa (Zeek: 300)
+TIMEOUT_UDP_ICMP = _float("IOT_IDS_TIMEOUT_UDP_ICMP", 10.0)            # Zeek: 60
 
-# Só lista um dispositivo como "atacante" se ele tiver pelo menos esta
-# quantidade de fluxos maliciosos (já filtrados pela confiança acima) na
-# janela atual. Elimina eventos isolados de 1-2 fluxos (rajada assimétrica
-# de um serviço de nuvem legítimo, por exemplo), mantendo detecção de
-# padrões sustentados (scan, flood, brute-force real geram MUITOS fluxos).
+# ------------------------------- CLASSIFICADOR --------------------------------
+# Só classifica janelas de 10 s JÁ FECHADAS (+ este atraso para os flows serem
+# gravados). Classificar janela em andamento gera win_* subestimados (skew).
+ATRASO_JANELA_S = _float("IOT_IDS_ATRASO_JANELA_S", 12.0)
+JANELA_HISTORICO_S = _float("IOT_IDS_JANELA_HISTORICO_S", 300.0)
+# REPLAY=true: desliga os filtros de tempo (útil p/ reanalisar um conn_live.log antigo)
+REPLAY = _bool("IOT_IDS_REPLAY", False)
+
+CONFIANCA_MINIMA_ATAQUE = _float("IOT_IDS_CONFIANCA_MINIMA", 75.0)
 MIN_FLUXOS_PARA_ALERTA = int(os.environ.get("IOT_IDS_MIN_FLUXOS_ALERTA", "3"))
 
 CONN_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
 DEBUG_JSON_PATH.parent.mkdir(parents=True, exist_ok=True)
+COLETAS_DIR.mkdir(parents=True, exist_ok=True)

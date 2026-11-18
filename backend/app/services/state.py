@@ -1,8 +1,5 @@
 # ==============================================================================
-# ESTADO COMPARTILHADO — substitui o antigo "status_rede_frontend.json".
-# O classificador escreve aqui; as rotas da API leem daqui. Tudo em RAM,
-# sem round-trip de disco, protegido por lock para a thread do classificador
-# e as threads de requisição da API não colidirem.
+# ESTADO COMPARTILHADO — classificador escreve, rotas da API leem (tudo em RAM).
 # ==============================================================================
 import threading
 from datetime import datetime
@@ -13,6 +10,7 @@ _estado_atual = {
     "ultima_atualizacao": None,
     "status_rede": "INICIALIZANDO",
     "modelo_carregado": False,
+    "modelo_versao": None,
     "erro_modelo": None,
     "total_fluxos_analisados": 0,
     "total_ataques_detectados": 0,

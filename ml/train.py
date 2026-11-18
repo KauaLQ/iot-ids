@@ -1,34 +1,41 @@
 # ==============================================================================
-# ml/train.py — Treinamento do motor de IA do IoT-IDS (IoT-23 dataset)
-# Conversão do notebook original para script, com caminhos portáveis
-# (pathlib) e parâmetros via linha de comando.
+# ml/train.py — Treinamento do motor de IA do IoT-IDS (IoT-23 + coletas próprias)
 #
-# Uso:
-#   python ml/train.py
-#   python ml/train.py --dataset-dir ml/datasets --out ml/models/motor_ia_ids_iot.joblib
+# Uso típico:
+#   python ml/train.py                              # IoT-23 + coletas, salva nova versão
+#   python ml/train.py --ativar-se-melhor           # só ativa se não piorar vs. a versão ativa
+#   python ml/train.py --fontes coletas             # somente dados coletados do seu ambiente
+#   python ml/train.py --peso-coleta 5 --nota "mais sessões do ESP32"
 #
-# IMPORTANTE: use o MESMO requirements.txt (raiz do projeto) para treinar e
-# para rodar o backend. Treinar com uma versão de scikit-learn/xgboost e
-# rodar a inferência com outra é a causa mais comum de erro de "joblib
-# corrompido" ao carregar o modelo.
+# Cada execução cria ml/models/model_vN.pkl + model_vN.json (métricas, dados,
+# versões das libs). NADA é sobrescrito. Ativar/rollback: python ml/registry.py
 # ==============================================================================
 import argparse
 import glob
-import os
+import json
+import sys
+import warnings
+from datetime import datetime
 from pathlib import Path
 
 import joblib
 import numpy as np
 import pandas as pd
+import sklearn
+import xgboost
 from sklearn.compose import ColumnTransformer
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.metrics import classification_report
+from sklearn.metrics import accuracy_score, classification_report, f1_score
 from sklearn.model_selection import StratifiedGroupKFold
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import LabelEncoder, OneHotEncoder
+from sklearn.utils.class_weight import compute_sample_weight
 from xgboost import XGBClassifier
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(PROJECT_ROOT))
+from ml import features as F        # noqa: E402
+from ml import registry             # noqa: E402
 
 MAPA_ATAQUES = {
     'Benign': 'Benigno', 'benign': 'Benigno',
@@ -40,164 +47,286 @@ MAPA_ATAQUES = {
     'DDoS': 'DDoS', 'Okiru': 'Botnet_Okiru',
 }
 
-COLUNAS_CONN_23 = [
-    'ts', 'uid', 'id.orig_h', 'id.orig_p', 'id.resp_h', 'id.resp_p',
-    'proto', 'service', 'duration', 'orig_bytes', 'resp_bytes',
-    'conn_state', 'local_orig', 'local_resp', 'missed_bytes',
-    'history', 'orig_pkts', 'orig_ip_bytes', 'resp_pkts',
-    'resp_ip_bytes', 'tunnel_parents', 'label', 'detailed_label',
-]
 
-COLUNAS_NUMERICAS = [
-    'duration', 'orig_bytes', 'resp_bytes', 'missed_bytes',
-    'orig_pkts', 'orig_ip_bytes', 'resp_pkts', 'resp_ip_bytes',
-    'win_qtd_conexoes', 'win_ips_destino_unicos', 'win_portas_destino_unicas',
-    'win_media_orig_bytes', 'win_taxa_s0',
-]
-COLUNAS_CATEGORICAS = ['proto', 'service', 'conn_state']
-
-COLUNAS_PROIBIDAS_LEAKAGE = [
-    'arquivo_origem', 'id_janela_unica', 'ts', 'uid', 'id.orig_h', 'id.resp_h',
-    'id.orig_p', 'id.resp_p', 'local_orig', 'local_resp', 'tunnel_parents',
-    'history', 'label', 'detailed_label', 'tipo_trafego',
-]
-
-
-def carregar_log_zeek(caminho_arquivo: Path, max_linhas: int = 200_000) -> pd.DataFrame:
-    df = pd.read_csv(
-        caminho_arquivo, sep=r'\t|\s{2,}', comment='#', header=None, engine='python',
-        na_values=['-', '(empty)'], nrows=max_linhas,
-    )
-    df.columns = COLUNAS_CONN_23
-    df["arquivo_origem"] = caminho_arquivo.name
+# ----------------------------------------------------------------------------- carga
+def carregar_log_zeek(caminho: Path, max_linhas: int) -> pd.DataFrame:
+    df = pd.read_csv(caminho, sep=r'\t|\s{2,}', comment='#', header=None, engine='python',
+                     na_values=['-', '(empty)'], nrows=max_linhas)
+    df.columns = F.COLUNAS_CONN_23
+    df['arquivo_origem'] = caminho.name
     return df
 
 
-def carregar_dataset(dataset_dir: Path) -> pd.DataFrame:
+def carregar_iot23(dataset_dir: Path, max_linhas: int) -> pd.DataFrame:
     arquivos = sorted(glob.glob(str(dataset_dir / "*labeled")))
     if not arquivos:
-        raise FileNotFoundError(f"Nenhum arquivo '.labeled' encontrado em '{dataset_dir}'.")
-
-    print(f"[INFO] {len(arquivos)} arquivo(s) encontrado(s) em '{dataset_dir}'.")
+        print(f"[INFO] Nenhum '*.labeled' em '{dataset_dir}' — IoT-23 ignorado.")
+        return pd.DataFrame()
     partes = []
-    for caminho in arquivos:
-        caminho = Path(caminho)
-        print(f"[INFO] Carregando: {caminho.name} ...")
+    for a in arquivos:
+        a = Path(a)
+        print(f"[INFO] IoT-23: carregando {a.name} ...")
         try:
-            partes.append(carregar_log_zeek(caminho))
+            partes.append(carregar_log_zeek(a, max_linhas))
         except Exception as e:
-            print(f"[ERRO] Falha ao carregar '{caminho.name}': {e}")
-
-    df_bruto = pd.concat(partes, ignore_index=True)
-    print(df_bruto['arquivo_origem'].value_counts())
-    return df_bruto
-
-
-def rotular_e_mapear(df_bruto: pd.DataFrame) -> pd.DataFrame:
-    df_bruto['label'] = df_bruto['label'].astype(str).str.strip().str.lower()
-    df_bruto['detailed_label'] = df_bruto['detailed_label'].fillna('Benign').astype(str).str.strip()
-    df_bruto['tipo_trafego'] = df_bruto['detailed_label'].map(lambda x: MAPA_ATAQUES.get(x, x))
-    df_bruto.loc[df_bruto['label'] == 'benign', 'tipo_trafego'] = 'Benigno'
-    return df_bruto
+            print(f"[ERRO] Falha ao carregar '{a.name}': {e}")
+    if not partes:
+        return pd.DataFrame()
+    df = pd.concat(partes, ignore_index=True)
+    df['label'] = df['label'].astype(str).str.strip().str.lower()
+    df['detailed_label'] = df['detailed_label'].fillna('Benign').astype(str).str.strip()
+    df['tipo_trafego'] = df['detailed_label'].map(lambda x: MAPA_ATAQUES.get(x, x))
+    df.loc[df['label'] == 'benign', 'tipo_trafego'] = 'Benigno'
+    df['origem'] = 'iot23'
+    df['sessao'] = df['arquivo_origem']
+    return df
 
 
-def calcular_features_de_janela(df_bruto: pd.DataFrame) -> pd.DataFrame:
-    df_bruto['ts'] = pd.to_numeric(df_bruto['ts'], errors='coerce')
-    df_bruto = df_bruto.dropna(subset=['ts']).reset_index(drop=True)
-    df_bruto = df_bruto.sort_values(by=['arquivo_origem', 'id.orig_h', 'ts']).reset_index(drop=True)
-
-    bloco_10s = (df_bruto['ts'] // 10).astype(np.int64)
-    df_bruto['id_janela_unica'] = (
-        df_bruto['arquivo_origem'].astype(str) + "_" +
-        df_bruto['id.orig_h'].astype(str) + "_" + bloco_10s.astype(str)
-    )
-
-    df_bruto['orig_bytes_temp'] = pd.to_numeric(df_bruto['orig_bytes'], errors='coerce').fillna(0.0)
-    df_bruto['flag_s0_temp'] = (df_bruto['conn_state'] == 'S0').astype(float)
-
-    grupo = df_bruto.groupby('id_janela_unica')
-    df_bruto['win_qtd_conexoes'] = grupo['uid'].transform('count')
-    df_bruto['win_ips_destino_unicos'] = grupo['id.resp_h'].transform('nunique')
-    df_bruto['win_portas_destino_unicas'] = grupo['id.resp_p'].transform('nunique')
-    df_bruto['win_media_orig_bytes'] = grupo['orig_bytes_temp'].transform('mean')
-    df_bruto['win_taxa_s0'] = grupo['flag_s0_temp'].transform('mean')
-
-    return df_bruto.drop(columns=['orig_bytes_temp', 'flag_s0_temp'])
-
-
-def balancear_classes(df: pd.DataFrame, limite_por_classe: int, seed: int) -> pd.DataFrame:
-    indices = []
-    for _, grupo in df.groupby('tipo_trafego'):
-        qtd = min(len(grupo), limite_por_classe)
-        indices.extend(grupo.sample(n=qtd, random_state=seed).index)
-    return df.loc[indices].sample(frac=1.0, random_state=seed).reset_index(drop=True)
+def carregar_coletas(pasta: Path):
+    """Cada sessão = pasta com conn.log + meta.json (criada pelo backend /api/coleta/*).
+    Para excluir uma sessão ruim sem apagá-la: edite meta.json -> "ativa": false."""
+    partes, sessoes = [], []
+    for meta_path in sorted(pasta.glob('*/meta.json')):
+        meta = json.loads(meta_path.read_text(encoding='utf-8'))
+        log = meta_path.parent / 'conn.log'
+        if not meta.get('ativa', True) or not log.exists() or log.stat().st_size == 0:
+            continue
+        df = F.ler_conn_log(log)
+        if df.empty:
+            continue
+        df['arquivo_origem'] = meta['nome']
+        df['sessao'] = meta['nome']
+        df['tipo_trafego'] = meta['rotulo']
+        df['origem'] = 'coleta'
+        partes.append(df)
+        sessoes.append({'nome': meta['nome'], 'rotulo': meta['rotulo'], 'fluxos': int(len(df)),
+                        'ip_dispositivo': meta.get('ip_dispositivo'), 'descricao': meta.get('descricao', '')})
+    if not partes:
+        return pd.DataFrame(), []
+    return pd.concat(partes, ignore_index=True), sessoes
 
 
-def treinar(dataset_dir: Path, saida_modelo: Path, limite_por_classe: int, seed: int):
-    df_bruto = carregar_dataset(dataset_dir)
-    df_bruto = rotular_e_mapear(df_bruto)
-    df_bruto = calcular_features_de_janela(df_bruto)
-    df_balanceado = balancear_classes(df_bruto, limite_por_classe, seed)
+# ----------------------------------------------------------------------------- split / balanceamento
+def dividir_coletas(df: pd.DataFrame):
+    """Hold-out HONESTO: janelas vizinhas da mesma sessão são quase idênticas, então
+    sortear janelas aleatórias vaza informação e infla as métricas.
+      - rótulo com >=2 sessões: a sessão mais recente inteira vai para teste;
+      - rótulo com 1 sessão: últimos 20% do tempo vão para teste (com 1 bloco de folga)."""
+    tr, te = [], []
+    for rotulo, g in df.groupby('tipo_trafego'):
+        sess = g.groupby('sessao')['ts'].min().sort_values().index.tolist()
+        if len(sess) >= 2:
+            m = g['sessao'] == sess[-1]
+            te += g.index[m].tolist(); tr += g.index[~m].tolist()
+        else:
+            corte = int(g['bloco_10s'].quantile(0.8))
+            m_te, m_tr = g['bloco_10s'] > corte, g['bloco_10s'] < corte
+            if m_te.sum() == 0:
+                print(f"[AVISO] '{rotulo}': dados insuficientes para teste — tudo foi para treino.")
+                tr += g.index.tolist(); continue
+            print(f"[AVISO] '{rotulo}' tem 1 sessão: teste = últimos 20% do tempo. Colete MAIS sessões "
+                  f"(ideal >=3 por classe) para uma métrica confiável.")
+            te += g.index[m_te].tolist(); tr += g.index[m_tr].tolist()
+    return tr, te
 
-    print("\n=== DISTRIBUIÇÃO DAS CLASSES APÓS PREPARAÇÃO ===")
-    print(df_balanceado['tipo_trafego'].value_counts())
 
-    grupos_janela = df_balanceado['id_janela_unica'].copy()
-    X = df_balanceado.drop(columns=COLUNAS_PROIBIDAS_LEAKAGE).copy()
-    codificador_y = LabelEncoder()
-    y = codificador_y.fit_transform(df_balanceado['tipo_trafego'])
+def limitar_por_classe(df: pd.DataFrame, limite: int, seed: int) -> pd.DataFrame:
+    partes = [g.sample(n=limite, random_state=seed) if len(g) > limite else g
+              for _, g in df.groupby(['origem', 'tipo_trafego'])]
+    return pd.concat(partes) if partes else df
 
-    X[COLUNAS_NUMERICAS] = X[COLUNAS_NUMERICAS].apply(pd.to_numeric, errors='coerce').fillna(0.0)
-    X[COLUNAS_CATEGORICAS] = X[COLUNAS_CATEGORICAS].fillna('desconhecido').astype(str)
 
-    divisor = StratifiedGroupKFold(n_splits=5, shuffle=True, random_state=seed)
-    idx_treino, idx_teste = next(divisor.split(X, y, groups=grupos_janela))
-    X_train, X_test = X.iloc[idx_treino].copy(), X.iloc[idx_teste].copy()
-    y_train, y_test = y[idx_treino], y[idx_teste]
+# ----------------------------------------------------------------------------- avaliação
+def _pred(art, X_full, chave):
+    cols_c, cols_n = art['colunas_categoricas'], art['colunas_numericas']
+    X = F.montar_X(X_full, cols_c, cols_n)
+    probas = art[chave].predict_proba(X)
+    idx = probas.argmax(axis=1)
+    return art['codificador_y'].inverse_transform(idx), probas.max(axis=1) * 100.0
 
-    preprocessador = ColumnTransformer(transformers=[
-        ('cat', OneHotEncoder(handle_unknown='ignore', sparse_output=False), COLUNAS_CATEGORICAS),
-        ('num', 'passthrough', COLUNAS_NUMERICAS),
+
+def avaliar(art, df_teste, chave='pipeline_xgb', limiar=75.0):
+    y = df_teste['tipo_trafego'].to_numpy()
+    nomes, conf = _pred(art, df_teste, chave)
+    labels = sorted(set(y) | set(nomes))
+    rel = classification_report(y, nomes, labels=labels, output_dict=True, zero_division=0)
+    benigno = y == 'Benigno'
+    alarme = (nomes != 'Benigno') & (conf >= limiar)
+    def _m(mask, arr):
+        return float(arr[mask].mean()) if mask.any() else None
+    return {
+        'n_teste': int(len(y)),
+        'accuracy': float(accuracy_score(y, nomes)),
+        'f1_macro': float(f1_score(y, nomes, labels=labels, average='macro', zero_division=0)),
+        'f1_weighted': float(f1_score(y, nomes, labels=labels, average='weighted', zero_division=0)),
+        'por_classe': {k: {m: float(v) for m, v in d.items()} for k, d in rel.items() if isinstance(d, dict)},
+        # Métricas OPERACIONAIS (o que o dashboard realmente mostra, com o filtro de confiança):
+        'limiar_confianca': limiar,
+        'confianca_media_benigno': _m(benigno, conf),
+        'confianca_media_ataque': _m(~benigno, conf),
+        'falso_alarme_benigno_pct': None if _m(benigno, alarme) is None else _m(benigno, alarme) * 100,
+        'deteccao_ataque_pct': None if _m(~benigno, alarme) is None else _m(~benigno, alarme) * 100,
+    }
+
+
+def _resumo_print(titulo, m):
+    if not m:
+        return
+    f = lambda x: '  -  ' if x is None else f"{x:6.2f}"
+    print(f"  {titulo:<26} acc={m['accuracy']:.4f}  F1-macro={m['f1_macro']:.4f}  | "
+          f"conf.benigno={f(m['confianca_media_benigno'])}%  conf.ataque={f(m['confianca_media_ataque'])}%  "
+          f"falso-alarme={f(m['falso_alarme_benigno_pct'])}%  detecção={f(m['deteccao_ataque_pct'])}%  (n={m['n_teste']})")
+
+
+# ----------------------------------------------------------------------------- treino
+def treinar(a):
+    fontes = {s.strip() for s in a.fontes.split(',')}
+    partes, sessoes = [], []
+    if 'iot23' in fontes:
+        d = carregar_iot23(a.dataset_dir, a.max_linhas)
+        if not d.empty:
+            partes.append(d)
+    if 'coletas' in fontes:
+        d, sessoes = carregar_coletas(a.coletas_dir)
+        if not d.empty:
+            partes.append(d)
+            print(f"[INFO] {len(sessoes)} sessão(ões) de coleta: " + ', '.join(f"{s['nome']}({s['fluxos']})" for s in sessoes))
+        else:
+            print(f"[INFO] Nenhuma sessão de coleta em '{a.coletas_dir}'.")
+    if not partes:
+        sys.exit("[ERRO] Nenhum dado de treino disponível.")
+
+    df = pd.concat(partes, ignore_index=True)
+    # Janelas calculadas ANTES de qualquer amostragem, separadas por arquivo/sessão
+    df = F.preparar_janelas(df, col_sessao='arquivo_origem')
+    df = limitar_por_classe(df, a.limite_por_classe, a.seed).reset_index(drop=True)
+
+    print("\n=== DISTRIBUIÇÃO (origem x classe) ===")
+    print(df.groupby(['origem', 'tipo_trafego']).size().unstack(0, fill_value=0))
+    if df['tipo_trafego'].nunique() < 2:
+        sys.exit("[ERRO] É preciso ao menos 2 classes (ex.: Benigno + PortScan).")
+
+    # --- split
+    idx_tr, idx_te = [], []
+    iot = df.index[df['origem'] == 'iot23']
+    if len(iot):
+        sub = df.loc[iot]
+        sgk = StratifiedGroupKFold(n_splits=5, shuffle=True, random_state=a.seed)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            t, e = next(sgk.split(sub, sub['tipo_trafego'], groups=sub['id_janela_unica']))
+        idx_tr += sub.index[t].tolist(); idx_te += sub.index[e].tolist()
+    col = df.index[df['origem'] == 'coleta']
+    if len(col):
+        t, e = dividir_coletas(df.loc[col])
+        idx_tr += t; idx_te += e
+    df_tr, df_te = df.loc[idx_tr], df.loc[idx_te]
+    if df_te.empty:
+        sys.exit("[ERRO] Conjunto de teste vazio — colete mais dados.")
+
+    enc = LabelEncoder().fit(df_tr['tipo_trafego'])
+    y_tr = enc.transform(df_tr['tipo_trafego'])
+    X_tr = F.montar_X(df_tr, F.COLUNAS_CATEGORICAS, F.COLUNAS_NUMERICAS)
+
+    # --- pesos: dados coletados valem N vezes mais + balanceamento de classes
+    w_origem = np.where(df_tr['origem'].to_numpy() == 'coleta', a.peso_coleta, 1.0)
+    w_xgb = w_origem * compute_sample_weight('balanced', y_tr)
+
+    prep = ColumnTransformer([
+        ('cat', OneHotEncoder(handle_unknown='ignore', sparse_output=False), F.COLUNAS_CATEGORICAS),
+        ('num', 'passthrough', F.COLUNAS_NUMERICAS),
     ])
+    rf = Pipeline([('prep', prep), ('modelo', RandomForestClassifier(
+        n_estimators=150, max_depth=15, class_weight='balanced', random_state=a.seed, n_jobs=-1))])
+    xgb = Pipeline([('prep', prep), ('modelo', XGBClassifier(
+        n_estimators=150, learning_rate=0.1, max_depth=6, eval_metric='mlogloss',
+        random_state=a.seed, n_jobs=-1))])
+    print("\n[INFO] Treinando Random Forest ...")
+    rf.fit(X_tr, y_tr, modelo__sample_weight=w_origem)
+    print("[INFO] Treinando XGBoost ...")
+    xgb.fit(X_tr, y_tr, modelo__sample_weight=w_xgb)
 
-    pipeline_rf = Pipeline(steps=[
-        ('prep', preprocessador),
-        ('modelo', RandomForestClassifier(n_estimators=150, max_depth=15,
-                                           class_weight='balanced', random_state=seed, n_jobs=-1)),
-    ])
-    pipeline_xgb = Pipeline(steps=[
-        ('prep', preprocessador),
-        ('modelo', XGBClassifier(n_estimators=150, learning_rate=0.1, max_depth=6,
-                                  eval_metric='mlogloss', random_state=seed, n_jobs=-1)),
-    ])
+    novo = {'pipeline_xgb': xgb, 'pipeline_rf': rf, 'codificador_y': enc,
+            'colunas_numericas': F.COLUNAS_NUMERICAS, 'colunas_categoricas': F.COLUNAS_CATEGORICAS,
+            'versao_features': F.VERSAO_FEATURES}
 
-    print("\n[INFO] Treinando Random Forest...")
-    pipeline_rf.fit(X_train, y_train)
-    print(classification_report(y_test, pipeline_rf.predict(X_test),
-                                 target_names=codificador_y.classes_, digits=4))
+    # --- avaliação (mesmo conjunto de teste para o novo e para o ativo = comparação justa)
+    print("\n=== AVALIAÇÃO NO CONJUNTO DE TESTE ===")
+    m_rf = avaliar(novo, df_te, 'pipeline_rf', a.limiar)
+    m_xgb = avaliar(novo, df_te, 'pipeline_xgb', a.limiar)
+    _resumo_print('RandomForest', m_rf)
+    _resumo_print('XGBoost (usado no backend)', m_xgb)
+    te_col = df_te[df_te['origem'] == 'coleta']
+    m_col = avaliar(novo, te_col, 'pipeline_xgb', a.limiar) if len(te_col) else None
+    _resumo_print('XGBoost só coletas', m_col)
+    print("\n--- Relatório por classe (XGBoost) ---")
+    y_nomes = df_te['tipo_trafego'].to_numpy()
+    nomes, _ = _pred(novo, df_te, 'pipeline_xgb')
+    print(classification_report(y_nomes, nomes, digits=4, zero_division=0))
 
-    print("\n[INFO] Treinando XGBoost...")
-    pipeline_xgb.fit(X_train, y_train)
-    print(classification_report(y_test, pipeline_xgb.predict(X_test),
-                                 target_names=codificador_y.classes_, digits=4))
+    comparacao = None
+    ativo = None
+    try:
+        ativo = registry.carregar_ativo()
+    except Exception as e:
+        print(f"[AVISO] Não foi possível carregar a versão ativa para comparar ({e}).")
+    if ativo is not None:
+        v_at = registry.versao_ativa()
+        try:
+            c_all = avaliar(ativo, df_te, 'pipeline_xgb', a.limiar)
+            c_col = avaliar(ativo, te_col, 'pipeline_xgb', a.limiar) if len(te_col) else None
+            comparacao = {'versao': v_at, 'todos': c_all, 'so_coletas': c_col}
+            print(f"=== COMPARAÇÃO NO MESMO TESTE: ativa ({v_at}) vs. NOVA ===")
+            _resumo_print(f'{v_at} (ativa) — tudo', c_all); _resumo_print('NOVA — tudo', m_xgb)
+            if c_col and m_col:
+                _resumo_print(f'{v_at} (ativa) — coletas', c_col); _resumo_print('NOVA — coletas', m_col)
+        except Exception as e:
+            print(f"[AVISO] Comparação com a versão ativa falhou ({type(e).__name__}: {e}).")
 
-    saida_modelo.parent.mkdir(parents=True, exist_ok=True)
-    joblib.dump({
-        'pipeline_xgb': pipeline_xgb, 'pipeline_rf': pipeline_rf,
-        'codificador_y': codificador_y,
-        'colunas_numericas': COLUNAS_NUMERICAS, 'colunas_categoricas': COLUNAS_CATEGORICAS,
-    }, saida_modelo, compress=3)
+    meta = {
+        'nota': a.nota, 'metricas': {**m_xgb, 'so_coletas': m_col}, 'metricas_random_forest': m_rf,
+        'comparacao_com_ativo': comparacao,
+        'dados': {'fontes': sorted(fontes), 'n_treino': int(len(df_tr)), 'n_teste': int(len(df_te)),
+                  'por_origem_classe': {f"{o}/{c}": int(n) for (o, c), n in df.groupby(['origem', 'tipo_trafego']).size().items()},
+                  'sessoes': sessoes},
+        'parametros': {k: (str(v) if isinstance(v, Path) else v) for k, v in vars(a).items()},
+        'features': {'versao': F.VERSAO_FEATURES, 'numericas': F.COLUNAS_NUMERICAS, 'categoricas': F.COLUNAS_CATEGORICAS},
+        'classes': list(enc.classes_),
+        'libs': {'python': sys.version.split()[0], 'sklearn': sklearn.__version__, 'xgboost': xgboost.__version__,
+                 'pandas': pd.__version__, 'numpy': np.__version__, 'joblib': joblib.__version__},
+    }
+    v = registry.registrar(novo, meta)
+    print(f"\n[SUCESSO] Modelo salvo como {v}  (ml/models/model_{v}.pkl + .json). Classes: {list(enc.classes_)}")
 
-    print(f"\n[SUCESSO] Modelo exportado para '{saida_modelo}'!")
-    print(f"[INFO] Classes suportadas: {list(codificador_y.classes_)}")
+    deve_ativar = a.ativar
+    if a.ativar_se_melhor and not a.ativar:
+        if comparacao is None:
+            deve_ativar = True
+            print("[INFO] Não havia versão ativa válida — ativando.")
+        else:
+            ok = m_xgb['f1_macro'] >= comparacao['todos']['f1_macro']
+            if m_col and comparacao['so_coletas']:
+                ok = ok and m_col['f1_macro'] >= comparacao['so_coletas']['f1_macro']
+            deve_ativar = ok
+            print("[INFO] Critério (F1-macro >= ativa, no mesmo teste): " + ("ATENDIDO" if ok else "NÃO atendido — versão ativa mantida."))
+    if deve_ativar:
+        registry.ativar(v)
+        print(f"[INFO] {v} ATIVADA (backend recarrega em ~2 s). Reverter: python ml/registry.py rollback")
+    else:
+        print(f"[INFO] {v} NÃO está ativa. Para ativar: python ml/registry.py ativar {v}")
 
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description="Treina o motor de IA do IoT-IDS.")
-    parser.add_argument('--dataset-dir', type=Path, default=PROJECT_ROOT / 'ml' / 'datasets')
-    parser.add_argument('--out', type=Path, default=PROJECT_ROOT / 'ml' / 'models' / 'motor_ia_ids_iot.joblib')
-    parser.add_argument('--limite-por-classe', type=int, default=15000)
-    parser.add_argument('--seed', type=int, default=42)
-    args = parser.parse_args()
-
-    treinar(args.dataset_dir, args.out, args.limite_por_classe, args.seed)
+    p = argparse.ArgumentParser(description="Treina o motor de IA do IoT-IDS (versionado).")
+    p.add_argument('--dataset-dir', type=Path, default=PROJECT_ROOT / 'ml' / 'datasets')
+    p.add_argument('--coletas-dir', type=Path, default=PROJECT_ROOT / 'ml' / 'datasets' / 'coletas')
+    p.add_argument('--fontes', default='iot23,coletas', help="'iot23', 'coletas' ou 'iot23,coletas'")
+    p.add_argument('--limite-por-classe', type=int, default=15000, help='teto de fluxos por (origem, classe)')
+    p.add_argument('--peso-coleta', type=float, default=3.0, help='peso extra das amostras coletadas (ESP32/seu ambiente)')
+    p.add_argument('--max-linhas', type=int, default=200_000, help='linhas lidas por arquivo IoT-23')
+    p.add_argument('--limiar', type=float, default=75.0, help='limiar de confiança das métricas operacionais')
+    p.add_argument('--seed', type=int, default=42)
+    p.add_argument('--ativar', action='store_true', help='ativa a nova versão ao final')
+    p.add_argument('--ativar-se-melhor', action='store_true', help='ativa só se F1-macro >= versão ativa (mesmo teste)')
+    p.add_argument('--nota', default='', help='comentário gravado nos metadados')
+    treinar(p.parse_args())

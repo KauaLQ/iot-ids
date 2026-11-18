@@ -16,6 +16,7 @@ class StatusResponse(BaseModel):
     ultima_atualizacao: Optional[str] = None
     status_rede: str
     modelo_carregado: bool
+    modelo_versao: Optional[str] = None
     erro_modelo: Optional[str] = None
     total_fluxos_analisados: int
     total_ataques_detectados: int

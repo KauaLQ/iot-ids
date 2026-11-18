@@ -1,165 +1,344 @@
 # ==============================================================================
-# SNIFFER — captura de flows de rede, substituindo o Zeek (sem build nativo p/
-# Windows). Usa Scapy, que é OS-agnóstico:
-#   - Windows: precisa do Npcap instalado e do processo rodando como Administrador.
-#   - Linux/macOS: usa libpcap, precisa rodar como root (sudo).
+# SNIFFER — captura com Scapy e emula o conn.log do Zeek (o formato do IoT-23).
 #
-# IMPORTANTE (correção pós-diagnóstico): os dois sentidos de uma MESMA conexão
-# TCP são agregados em UM ÚNICO flow (como o Zeek faz), identificando
-# explicitamente quem é o originador (quem mandou o SYN puro) e quem é o
-# respondente (quem mandou o SYN-ACK). Antes, cada direção virava um flow
-# separado e o lado "cliente" nunca via o SYN-ACK (que só chegava na entrada
-# do outro lado) — isso fazia TODA conexão de saída, mesmo bem-sucedida,
-# cair em conn_state='S0', inflando artificialmente win_taxa_s0 e gerando
-# falsos positivos de PortScan/C&C/DDoS inclusive para tráfego normal.
+# O que foi alinhado ao Zeek (divergências corrigidas em relação à versão anterior):
+#  1. orig_bytes/resp_bytes = bytes de PAYLOAD (TCP: pelo espaço de sequência, sem
+#     retransmissões; UDP: udp.len-8; ICMP: ip.len-ihl-8). Antes usava len(pkt),
+#     que inclui o cabeçalho Ethernet+IP+TCP (um SYN virava "66 bytes").
+#  2. orig_ip_bytes/resp_ip_bytes = soma do TOTAL LENGTH do cabeçalho IP (não len(pkt)).
+#  3. conn_state segue a máquina de estados do Zeek: S0, S1, SF, REJ, S2, S3, RSTO,
+#     RSTR, RSTOS0, RSTRH, SH, SHR, OTH. Antes: RST => sempre 'REJ'; UDP/ICMP => 'OTH'.
+#     UDP/ICMP no Zeek: 'SF' se houve resposta, 'S0' se só o originador falou.
+#  4. service só é preenchido quando há payload que o confirme (HTTP/TLS/SSH/DNS/DHCP),
+#     como o DPI do Zeek. Antes era inferido pela porta (443 em SYN sem resposta
+#     virava 'ssl'; 1883 virava 'mqtt', categoria inexistente no treino).
+#  5. Papéis orig/resp: ao descobrir o SYN, os contadores são TROCADOS junto com os
+#     endpoints (antes só os endpoints eram trocados e os pacotes ficavam contados
+#     no lado errado).
+#  6. Reuso de 4-tupla: novo SYN puro sobre conexão já estabelecida/encerrada abre
+#     NOVO flow (antes fundia conexões distintas). Pacotes tardios de conexão já
+#     encerrada (ACK final, etc.) são ignorados por 10 s em vez de virar flows 'OTH'.
+#  7. Timeouts por estado (tentativa 5 s, fechado 2 s, ativo 30 s, UDP/ICMP 10 s) em
+#     vez de 5 s fixos para tudo (que quebrava conexões longas em vários flows).
+#  8. Timestamp = relógio da captura (pkt.time), não o do processamento; ICMP usa
+#     (type, code) como portas, como o Zeek; ip.len==0 (offload do Windows) tratado;
+#     uid único (antes 'win-<ms>' colidia).
+# Requisitos: Windows -> Npcap + Administrador; Linux/macOS -> root.
 # ==============================================================================
+import itertools
 import threading
 import time
 
 from app import config
+from app.services import coleta
 
 try:
-    from scapy.all import sniff, IP, TCP, UDP, conf
+    from scapy.all import sniff, IP, TCP, UDP, ICMP, conf
     SCAPY_DISPONIVEL = True
 except Exception:
     SCAPY_DISPONIVEL = False
 
-TIMEOUT_FLOW = 5.0
 INTERVALO_FLUSH = 2.0
-SERVICOS_CONHECIDOS = {80: 'http', 443: 'ssl', 53: 'dns', 22: 'ssh', 1883: 'mqtt'}
-
 SYN, ACK, FIN, RST = 0x02, 0x10, 0x01, 0x04
+PROTO_NOME = {1: 'icmp', 6: 'tcp', 17: 'udp'}
+PROTOCOLOS_SUPORTADOS = set(PROTO_NOME)
+SERVICOS_UDP = {53: 'dns', 67: 'dhcp', 68: 'dhcp'}
+_HTTP = (b'GET ', b'POST', b'HEAD', b'PUT ', b'DELE', b'OPTI', b'PATC', b'HTTP')
+_PARES = ('pkts', 'ip_bytes', 'bytes', 'head', 'fin', 'rst', 'seq_max')
 
-_lock = threading.Lock()
-_flows: dict = {}
-
-_stats = {"vistos": 0, "ignorados_proto": 0, "ignorados_subnet": 0, "aceitos": 0}
+_lock_arquivo = threading.Lock()
 
 
+# ------------------------------------------------------------------- tabela de flows
+def _novo_flow(ts, ep_o, ep_r, proto, icmp_tc):
+    f = {'proto': proto, 'ts_inicio': ts, 'ts_fim': ts, 'orig': ep_o, 'resp': ep_r, 'icmp_tc': icmp_tc,
+         'syn': False, 'synack': False, 'fechado': False, 'historico': ''}
+    for lado in ('orig', 'resp'):
+        f[lado + '_pkts'] = f[lado + '_ip_bytes'] = f[lado + '_bytes'] = 0
+        f[lado + '_head'] = b''
+        f[lado + '_fin'] = f[lado + '_rst'] = False
+        f[lado + '_seq_max'] = None
+    return f
+
+
+def _trocar_papeis(f):
+    f['orig'], f['resp'] = f['resp'], f['orig']
+    for k in _PARES:
+        f['orig_' + k], f['resp_' + k] = f['resp_' + k], f['orig_' + k]
+    f['historico'] = f['historico'].swapcase()
+
+
+def _hist(f, de_orig, ch):
+    c = ch.upper() if de_orig else ch.lower()
+    if c not in f['historico']:
+        f['historico'] += c
+
+
+def _contar_payload_tcp(f, lado, payload_len, seq):
+    """Zeek conta orig_bytes/resp_bytes pelo espaço de sequência: retransmissão não soma."""
+    if payload_len <= 0:
+        return
+    fim = (seq + payload_len) & 0xFFFFFFFF
+    atual = f[lado + '_seq_max']
+    if atual is None:
+        f[lado + '_bytes'] += payload_len
+        f[lado + '_seq_max'] = fim
+    else:
+        avanco = (fim - atual) & 0xFFFFFFFF
+        if 0 < avanco < 0x80000000:
+            f[lado + '_bytes'] += min(avanco, payload_len)
+            f[lado + '_seq_max'] = fim
+
+
+class TabelaFlows:
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._flows = {}
+        self._rotacionados = []
+        self._fechados = {}     # chave -> ts em que foi emitido (ignora pacotes tardios)
+        self.stats = {"vistos": 0, "ignorados_proto": 0, "ignorados_subnet": 0, "aceitos": 0}
+
+    def processar(self, ts, proto, src, sport, dst, dport, flags=0, ip_len=0,
+                  payload_len=0, seq=0, payload_head=b'', icmp_tc=None):
+        ep_s, ep_d = (src, sport), (dst, dport)
+        chave = (proto,) + tuple(sorted([ep_s, ep_d]))
+        tcp = proto == 6
+        is_syn = tcp and bool(flags & SYN)
+        is_ack = tcp and bool(flags & ACK)
+        is_fin = tcp and bool(flags & FIN)
+        is_rst = tcp and bool(flags & RST)
+
+        with self._lock:
+            f = self._flows.get(chave)
+            if f is not None and is_syn and not is_ack and (f['fechado'] or f['synack']):
+                self._rotacionados.append(self._flows.pop(chave))      # nova conexão, mesma 4-tupla
+                f = None
+            if f is None:
+                if tcp and not is_syn and ts - self._fechados.get(chave, -1e9) < 10.0:
+                    return                                              # sobra de conexão já encerrada
+                f = _novo_flow(ts, ep_s, ep_d, proto, icmp_tc)
+                self._flows[chave] = f
+
+            if tcp:
+                if is_syn and not is_ack:
+                    if not f['syn'] and f['orig'] != ep_s:
+                        _trocar_papeis(f)
+                    f['syn'] = True
+                elif is_syn and is_ack:
+                    if not f['synack'] and not f['syn'] and f['orig'] == ep_s:
+                        _trocar_papeis(f)       # quem manda SYN-ACK é o respondente
+                    f['synack'] = True
+
+            de_orig = (ep_s == f['orig'])
+            lado = 'orig' if de_orig else 'resp'
+            f['ts_fim'] = max(f['ts_fim'], ts)
+            f[lado + '_pkts'] += 1
+            f[lado + '_ip_bytes'] += ip_len
+            if tcp:
+                _contar_payload_tcp(f, lado, payload_len, seq)
+                if is_syn:
+                    _hist(f, de_orig, 'H' if is_ack else 'S')
+                if payload_len > 0:
+                    _hist(f, de_orig, 'D')
+                if is_fin:
+                    f[lado + '_fin'] = True; _hist(f, de_orig, 'F')
+                if is_rst:
+                    f[lado + '_rst'] = True; _hist(f, de_orig, 'R')
+                if is_ack and not is_syn and not payload_len and not is_fin and not is_rst:
+                    _hist(f, de_orig, 'A')
+                f['fechado'] = f['orig_rst'] or f['resp_rst'] or (f['orig_fin'] and f['resp_fin'])
+            else:
+                f[lado + '_bytes'] += payload_len
+            if payload_len > 0 and not f[lado + '_head']:
+                f[lado + '_head'] = payload_head
+
+    @staticmethod
+    def _timeout(f):
+        if f['proto'] != 6:
+            return config.TIMEOUT_UDP_ICMP
+        if f['fechado']:
+            return config.TIMEOUT_TCP_FECHADO
+        if f['syn'] and not f['synack']:
+            return config.TIMEOUT_TCP_TENTATIVA
+        return config.TIMEOUT_TCP_ATIVO
+
+    def coletar(self, agora, forcar_origem=None, forcar_todos=False):
+        """Retorna flows expirados. forcar_origem=IP / forcar_todos=True encerram flows
+        em andamento (usado ao PARAR uma coleta, para não perder o fim da sessão)."""
+        saida = []
+        with self._lock:
+            saida.extend(self._rotacionados)
+            self._rotacionados = []
+            for chave in list(self._flows):
+                f = self._flows[chave]
+                forcar = forcar_todos or (forcar_origem is not None and f['orig'][0] == forcar_origem)
+                if forcar or agora - f['ts_fim'] >= self._timeout(f):
+                    saida.append(self._flows.pop(chave))
+                    if f['proto'] == 6:
+                        self._fechados[chave] = agora
+            for k in [k for k, t in self._fechados.items() if agora - t > 30.0]:
+                del self._fechados[k]
+        return saida
+
+    def ativos(self):
+        with self._lock:
+            return len(self._flows)
+
+
+# ------------------------------------------------------------------- conn_state / service
+def estimar_conn_state(f) -> str:
+    if f['proto'] != 6:
+        return 'SF' if f['resp_pkts'] > 0 else 'S0'      # regra do Zeek p/ UDP e ICMP
+    syn, synack = f['syn'], f['synack']
+    o_fin, r_fin, o_rst, r_rst = f['orig_fin'], f['resp_fin'], f['orig_rst'], f['resp_rst']
+    if syn and not synack:
+        if r_rst: return 'REJ'
+        if o_rst: return 'RSTOS0'
+        if o_fin: return 'SH'
+        return 'S0'
+    if synack and not syn:
+        if r_rst: return 'RSTRH'
+        if r_fin: return 'SHR'
+        return 'OTH'
+    if syn and synack:
+        if o_rst: return 'RSTO'
+        if r_rst: return 'RSTR'
+        if o_fin and r_fin: return 'SF'
+        if o_fin: return 'S2'
+        if r_fin: return 'S3'
+        return 'S1'
+    if o_rst: return 'RSTO'
+    if r_rst: return 'RSTR'
+    if o_fin and r_fin: return 'SF'
+    return 'OTH'
+
+
+def detectar_servico(f) -> str:
+    """DPI mínimo, só com o que o Zeek também confirma pelo payload. '-' caso contrário."""
+    if f['proto'] == 6:
+        if not (f['syn'] and f['synack']):
+            return '-'
+        for head in (f['orig_head'], f['resp_head']):
+            if head.startswith(_HTTP):
+                return 'http'
+            if len(head) >= 2 and head[0] == 0x16 and head[1] == 0x03:
+                return 'ssl'
+            if head.startswith(b'SSH-'):
+                return 'ssh'
+        return '-'
+    if f['proto'] == 17 and f['orig_bytes'] > 0:
+        return SERVICOS_UDP.get(f['resp'][1], '-')
+    return '-'
+
+
+_contador_uid = itertools.count(1)
+
+
+def flow_para_linha(f):
+    """Retorna (ip_orig, ts_inicio, linha_tsv) com as 22 colunas de COLUNAS_CONN_22."""
+    proto = f['proto']
+    (ip_o, p_o), (ip_r, p_r) = f['orig'], f['resp']
+    if proto == 1 and f['icmp_tc']:
+        p_o, p_r = f['icmp_tc']                  # Zeek: orig_p=type, resp_p=code
+    uid = f"C{next(_contador_uid):07x}{int(f['ts_inicio'] * 1000) & 0xFFFFFF:06x}"
+    pkts_total = f['orig_pkts'] + f['resp_pkts']
+    dur = max(f['ts_fim'] - f['ts_inicio'], 0.0)
+    campos = [
+        f"{f['ts_inicio']:.6f}", uid, ip_o, str(p_o), ip_r, str(p_r),
+        PROTO_NOME[proto], detectar_servico(f),
+        '-' if pkts_total <= 1 else f"{dur:.6f}",     # '-' e 0 são equivalentes após fillna(0)
+        str(f['orig_bytes']), str(f['resp_bytes']),
+        estimar_conn_state(f), '-', '-', '0', f['historico'] or '-',
+        str(f['orig_pkts']), str(f['orig_ip_bytes']), str(f['resp_pkts']), str(f['resp_ip_bytes']),
+        '-', str(proto),
+    ]
+    return ip_o, f['ts_inicio'], '\t'.join(campos)
+
+
+TABELA = TabelaFlows()
+
+
+def _emitir(flows):
+    registros = [flow_para_linha(f) for f in flows]
+    if not registros:
+        return
+    with _lock_arquivo:
+        with open(config.CONN_LOG_PATH, 'a', encoding='utf-8') as fh:
+            fh.write('\n'.join(r[2] for r in registros) + '\n')
+    coleta.registrar_fluxos(registros)
+
+
+def descarregar_pendentes(ip_origem=None):
+    """Encerra e grava flows em andamento (chamado por coleta.parar)."""
+    _emitir(TABELA.coletar(time.time(), forcar_origem=ip_origem, forcar_todos=ip_origem is None))
+
+
+# ------------------------------------------------------------------- captura (Scapy)
 def _resolver_interface():
-    """Retorna (iface, descricao). iface=None significa 'ainda não encontrada'
-    (ex.: hotspot desligado)."""
     if config.SNIFFER_IFACE:
         return config.SNIFFER_IFACE, f"nome '{config.SNIFFER_IFACE}'"
     if not config.SNIFFER_IFACE_IP:
         return conf.iface, f"padrão do Scapy ({conf.iface})"
     try:
-        conf.ifaces.reload()   # relê os adaptadores (o hotspot pode ter ligado depois do import)
+        conf.ifaces.reload()
     except Exception:
         pass
     alvo = config.SNIFFER_IFACE_IP
     for i in conf.ifaces.values():
         ips = set(getattr(i, "ips", {}).get(4, [])) | {getattr(i, "ip", None)}
         if alvo in ips:
-            nome = getattr(i, "description", None) or getattr(i, "name", str(i))
-            return i, f"IP {alvo} -> {nome}"
+            return i, f"IP {alvo} -> {getattr(i, 'description', None) or getattr(i, 'name', str(i))}"
     return None, f"nenhuma interface com IP {alvo}"
 
 
-def _endpoints(pkt):
-    ip = pkt[IP]
-    if TCP in pkt:
-        sport, dport = pkt[TCP].sport, pkt[TCP].dport
-    elif UDP in pkt:
-        sport, dport = pkt[UDP].sport, pkt[UDP].dport
-    else:
-        sport, dport = 0, 0
-    return ip.proto, (ip.src, sport), (ip.dst, dport)
-
-
-def _chave_flow(proto, ep_a, ep_b):
-    # Normaliza a ordem dos endpoints para que os dois sentidos do mesmo
-    # fluxo caiam sempre na mesma chave, não importa quem foi capturado primeiro.
-    par = tuple(sorted([ep_a, ep_b]))
-    return (proto,) + par
-
-
-def _novo_flow(ts, ep_origem_tentativa, ep_destino_tentativa):
-    return {
-        'ts_inicio': ts, 'ts_fim': ts,
-        # orig_ep/resp_ep são "tentativos" até vermos um SYN puro que confirme
-        # definitivamente quem iniciou a conexão.
-        'orig_ep': ep_origem_tentativa, 'resp_ep': ep_destino_tentativa,
-        'orig_pkts': 0, 'resp_pkts': 0,
-        'orig_bytes': 0, 'resp_bytes': 0,
-        'syn_visto': False, 'synack_visto': False,
-        'fin_orig': False, 'fin_resp': False, 'rst_visto': False,
-    }
-
-
-PROTOCOLOS_SUPORTADOS = {1, 6, 17}  # ICMP, TCP, UDP — o resto (IGMP, etc.) não vira "flow"
+def _multicast_ou_broadcast(ip: str) -> bool:
+    if ip.endswith('.255') or ip == '255.255.255.255':
+        return True
+    try:
+        return 224 <= int(ip.split('.', 1)[0]) <= 239
+    except ValueError:
+        return False
 
 
 def _processar_pacote(pkt):
     if IP not in pkt:
         return
-    _stats["vistos"] += 1
+    st = TABELA.stats
+    st["vistos"] += 1
     ip = pkt[IP]
     if ip.proto not in PROTOCOLOS_SUPORTADOS:
-        _stats["ignorados_proto"] += 1
+        st["ignorados_proto"] += 1
         return
     if not (ip.src.startswith(config.SUBNET_PREFIX) or ip.dst.startswith(config.SUBNET_PREFIX)):
-        _stats["ignorados_subnet"] += 1
+        st["ignorados_subnet"] += 1
         return
-    _stats["aceitos"] += 1
+    if config.IGNORAR_MULTICAST and (_multicast_ou_broadcast(ip.dst) or _multicast_ou_broadcast(ip.src)):
+        st["ignorados_subnet"] += 1
+        return
+    st["aceitos"] += 1
 
-    agora = time.time()
-    proto, ep_src, ep_dst = _endpoints(pkt)
-    chave = _chave_flow(proto, ep_src, ep_dst)
-    tamanho = len(pkt)
-
-    is_syn = is_ack = is_fin = is_rst = False
+    ts = float(pkt.time)
+    ip_len = int(ip.len or 0) or max(len(pkt) - 14, 0)   # ip.len==0 com offload no Windows
+    ihl = int(ip.ihl or 5) * 4
     if TCP in pkt:
-        flags = pkt[TCP].flags
-        is_syn, is_ack = bool(flags & SYN), bool(flags & ACK)
-        is_fin, is_rst = bool(flags & FIN), bool(flags & RST)
-
-    with _lock:
-        flow = _flows.get(chave)
-        if flow is None:
-            flow = _novo_flow(agora, ep_src, ep_dst)
-            _flows[chave] = flow
-
-        # SYN puro (sem ACK) = quem está iniciando a conexão de fato.
-        # Corrige o papel orig/resp mesmo que o primeiro pacote capturado
-        # tenha sido, por azar de timing, da resposta.
-        if is_syn and not is_ack:
-            flow['orig_ep'], flow['resp_ep'] = ep_src, ep_dst
-            flow['syn_visto'] = True
-        elif is_syn and is_ack:
-            flow['synack_visto'] = True
-            if flow['orig_ep'] == ep_src:
-                # o remetente deste SYN-ACK é, na verdade, quem responde
-                flow['orig_ep'], flow['resp_ep'] = ep_dst, ep_src
-
-        flow['ts_fim'] = agora
-
-        if ep_src == flow['orig_ep']:
-            flow['orig_pkts'] += 1
-            flow['orig_bytes'] += tamanho
-        else:
-            flow['resp_pkts'] += 1
-            flow['resp_bytes'] += tamanho
-
-        if is_fin:
-            if ep_src == flow['orig_ep']:
-                flow['fin_orig'] = True
-            else:
-                flow['fin_resp'] = True
-        if is_rst:
-            flow['rst_visto'] = True
-
-
-def _estimar_conn_state(flow):
-    if flow['rst_visto']:
-        return 'REJ'
-    if flow['syn_visto'] and not flow['synack_visto']:
-        return 'S0'          # tentativa sem resposta — isso sim é suspeito
-    if flow['syn_visto'] and flow['synack_visto'] and (flow['fin_orig'] or flow['fin_resp']):
-        return 'SF'          # handshake completo + encerramento normal
-    if flow['syn_visto'] and flow['synack_visto']:
-        return 'S1'          # conexão estabelecida, ainda em andamento
-    return 'OTH'             # UDP/ICMP ou flow capturado parcialmente
+        t = pkt[TCP]
+        # Payload pelo cabeçalho (NÃO por len(t.payload): o padding Ethernet de 60 bytes
+        # faria um SYN parecer ter payload).
+        pl = max(ip_len - ihl - int(t.dataofs or 5) * 4, 0)
+        head = bytes(t.payload)[:min(pl, 16)] if pl else b''
+        TABELA.processar(ts, 6, ip.src, int(t.sport), ip.dst, int(t.dport), flags=int(t.flags),
+                         ip_len=ip_len, payload_len=pl, seq=int(t.seq), payload_head=head)
+    elif UDP in pkt:
+        u = pkt[UDP]
+        pl = max(int(u.len) - 8, 0) if u.len else max(ip_len - ihl - 8, 0)
+        head = bytes(u.payload)[:min(pl, 16)] if pl else b''
+        TABELA.processar(ts, 17, ip.src, int(u.sport), ip.dst, int(u.dport),
+                         ip_len=ip_len, payload_len=pl, payload_head=head)
+    elif ICMP in pkt:
+        i = pkt[ICMP]
+        pl = max(ip_len - ihl - 8, 0)
+        TABELA.processar(ts, 1, ip.src, 0, ip.dst, 0, ip_len=ip_len, payload_len=pl,
+                         icmp_tc=(int(i.type), int(i.code)))
 
 
 def _loop_flush(stop_event: threading.Event):
@@ -168,38 +347,13 @@ def _loop_flush(stop_event: threading.Event):
         time.sleep(INTERVALO_FLUSH)
         if time.time() - ultimo_log > 10:
             ultimo_log = time.time()
-            print(f"[SNIFFER] stats={_stats} flows_ativos={len(_flows)}")
-            if _stats["vistos"] == 0:
+            st = TABELA.stats
+            print(f"[SNIFFER] stats={st} flows_ativos={TABELA.ativos()}")
+            if st["vistos"] == 0:
                 print("[SNIFFER] AVISO: nenhum pacote IP visto (interface errada, hotspot sem clientes ou Npcap).")
-            elif _stats["aceitos"] == 0:
+            elif st["aceitos"] == 0:
                 print(f"[SNIFFER] AVISO: pacotes vistos, mas fora de {config.SUBNET_PREFIX}*")
-        agora = time.time()
-        linhas = []
-        with _lock:
-            expirados = [k for k, f in _flows.items() if agora - f['ts_fim'] >= TIMEOUT_FLOW]
-            for chave in expirados:
-                flow = _flows.pop(chave)
-                proto_num = chave[0]
-                ip_orig, porta_orig = flow['orig_ep']
-                ip_resp, porta_resp = flow['resp_ep']
-                proto_nome = {6: 'tcp', 17: 'udp', 1: 'icmp'}[proto_num]  # só chega aqui o que é suportado
-                servico = SERVICOS_CONHECIDOS.get(porta_resp, '-')
-                duracao = max(flow['ts_fim'] - flow['ts_inicio'], 0.0)
-                conn_state = _estimar_conn_state(flow)
-                linha = [
-                    f"{flow['ts_inicio']:.6f}", f"win-{int(flow['ts_inicio']*1000)}",
-                    ip_orig, str(porta_orig), ip_resp, str(porta_resp),
-                    proto_nome, servico, f"{duracao:.6f}",
-                    str(flow['orig_bytes']), str(flow['resp_bytes']),
-                    conn_state, 'T', 'F', '0', '-',
-                    str(flow['orig_pkts']), str(flow['orig_bytes']),
-                    str(flow['resp_pkts']), str(flow['resp_bytes']),
-                    '-', str(proto_num),
-                ]
-                linhas.append('\t'.join(linha))
-        if linhas:
-            with open(config.CONN_LOG_PATH, 'a', encoding='utf-8') as f:
-                f.write('\n'.join(linhas) + '\n')
+        _emitir(TABELA.coletar(time.time()))
 
 
 def iniciar_sniffer_em_background(stop_event: threading.Event) -> threading.Thread | None:
@@ -216,8 +370,7 @@ def iniciar_sniffer_em_background(stop_event: threading.Event) -> threading.Thre
             iface, desc = _resolver_interface()
             if iface is None:
                 if not avisou:
-                    print(f"[SNIFFER] Aguardando interface: {desc}. Ligue o Hotspot Móvel "
-                          f"(tentando de novo a cada 5s).")
+                    print(f"[SNIFFER] Aguardando interface: {desc}. Ligue o Hotspot Móvel (nova tentativa a cada 5s).")
                     avisou = True
                 stop_event.wait(5)
                 continue

@@ -1,51 +1,41 @@
 // ==============================================================================
 // FIRMWARE DE TESTE — ESP32 (Arduino / PlatformIO)
-// Gera tráfego de rede real para estressar o IoT-IDS, em dois modos:
-//   MODO_ATAQUE=0 -> Movimentação NORMAL (padrão esperado, periódico)
-//   MODO_ATAQUE=1 -> Movimentação MALICIOSA (port scan estocástico, cada
-//                    execução sorteia alvos/portas/tempos diferentes)
-// O modo é definido em tempo de compilação via platformio.ini (-D MODO_ATAQUE=..)
+// Gera tráfego REAL para coletar sessões rotuladas para o IoT-IDS.
+//   MODO_ATAQUE=0 -> tráfego normal (HTTP periódico)           => rotule "Benigno"
+//   MODO_ATAQUE=1 -> varreduras, sorteadas a cada boot         => rotule "PortScan"
+//       sub 0: scan misto (portas comuns/aleatórias, alvos variados)
+//       sub 1: brute-force (uma porta fixa no gateway)
+//       sub 2: scan HORIZONTAL (mesma porta, muitos IPs) — o padrão do IoT-23
+//   Perfil de velocidade (sorteado): 0 rápido (~20-100 conn/s), 1 médio, 2 lento.
+// IMPORTANTE: o modelo NÃO deve depender deste firmware. Este código só serve para
+// gerar dados variados; para robustez, também colete tráfego de outras fontes
+// (celular, notebook, nmap) — veja o roteiro no README.
+// O modo é definido em tempo de compilação (platformio.ini: -D MODO_ATAQUE=..).
 // ==============================================================================
 #include <WiFi.h>
 #include <WiFiClient.h>
 
-#define MODO_ATAQUE 1   // fallback: normal, caso platformio.ini não defina a flag
+#define MODO_ATAQUE 0   // padrão: normal
 
 // ---------------------------- CONFIGURAÇÃO DE REDE ---------------------------
-const char* WIFI_SSID  = "ssid";
-const char* WIFI_SENHA = "pass";
+const char* WIFI_SSID  = "KAUA_LQ";
+const char* WIFI_SENHA = "12345678";
 
-// ------------------------------------------------------------------------------
-// SERVIDOR_NORMAL: host FIXO na mesma rede Wi-Fi que o ESP32 contata repetida
-// e previsivelmente no MODO NORMAL — simula o comportamento de um dispositivo
-// IoT "bem comportado" que conversa sempre com o mesmo hub/broker/servidor.
-//
-// NÃO precisa ser nenhum serviço especial do projeto. Qualquer host da sua
-// LAN que tenha algo escutando na porta abaixo serve. Caminho mais simples:
-//   1) No PowerShell da sua máquina Windows: ipconfig  -> anote o IPv4 do
-//      adaptador Wi-Fi (ex.: 192.168.1.1).
-//   2) Nessa mesma máquina, rode: python -m http.server 8500
-//      (não precisa ser admin; porta 8500 é só um endpoint HTTP descartável)
-//   3) Preencha os dois campos abaixo com esse IP e essa porta.
-// Se preferir, pode apontar para o IP do roteador (porta 80) — mas aí, se o
-// roteador não responder na porta, as conexões vão falhar (S0) e o modo
-// "normal" vai parecer uma varredura. Prefira sempre um host com um serviço
-// realmente escutando.
-// ------------------------------------------------------------------------------
+// Host fixo contatado no modo normal. Na máquina Windows (hotspot 192.168.137.1):
+// python -m http.server 8500
 IPAddress SERVIDOR_NORMAL(192, 168, 137, 1);
 const uint16_t PORTA_SERVIDOR_NORMAL = 8500;
 
-// Alvos do modo MALICIOSO
 const IPAddress GATEWAY_HOTSPOT(192, 168, 137, 1);
 
 const uint16_t PORTAS_COMUNS[] = {21, 22, 23, 25, 53, 80, 110, 143, 443, 445,
                                    1883, 3306, 3389, 8080, 8883};
 const int QTD_PORTAS_COMUNS = sizeof(PORTAS_COMUNS) / sizeof(PORTAS_COMUNS[0]);
 
-// Sorteado uma vez por execução: 0 = scan horizontal/vertical misto,
-// 1 = repetição numa única porta (padrão tipo brute-force)
-int subTipoAtaqueEscolhido = 0;
-uint16_t portaAlvoFixaBruteForce = 22;
+int subTipoAtaqueEscolhido = 0;      // 0 misto | 1 brute-force | 2 horizontal
+int perfilVelocidade = 0;            // 0 rápido | 1 médio | 2 lento
+uint16_t portaAlvoFixa = 22;
+uint8_t proximoHostHorizontal = 2;
 
 void conectarWiFi() {
     Serial.printf("[WIFI] Conectando a '%s'...\n", WIFI_SSID);
@@ -55,15 +45,13 @@ void conectarWiFi() {
         delay(300);
         Serial.print(".");
     }
-    Serial.printf("\n[WIFI] Conectado! IP do ESP32: %s\n", WiFi.localIP().toString().c_str());
+    Serial.printf("\n[WIFI] Conectado! IP do ESP32: %s  <-- use este IP na coleta\n",
+                  WiFi.localIP().toString().c_str());
 }
 
 // Comportamento regular: mesmo servidor, mesma porta, intervalo quase fixo.
 void executarPassoNormal() {
     WiFiClient client;
-    Serial.printf("[NORMAL] GET http://%s:%u/ ...\n",
-                   SERVIDOR_NORMAL.toString().c_str(), PORTA_SERVIDOR_NORMAL);
-
     if (client.connect(SERVIDOR_NORMAL, PORTA_SERVIDOR_NORMAL, 1000)) {
         client.print(String("GET / HTTP/1.1\r\nHost: ") +
                       SERVIDOR_NORMAL.toString() + "\r\nConnection: close\r\n\r\n");
@@ -72,60 +60,60 @@ void executarPassoNormal() {
             while (client.available()) client.read();
         }
     } else {
-        Serial.println("[NORMAL] Falha de conexão (verifique se o http.server está rodando).");
+        Serial.println("[NORMAL] Falha de conexão (o http.server está rodando?).");
     }
     client.stop();
-
-    long jitter = (long)esp_random() % 1000 - 500; // ±500ms, padrão regular
+    long jitter = (long)(esp_random() % 1000) - 500;
     delay(4000 + jitter);
 }
 
-// Padrões suspeitos ALEATORIZADOS a cada execução do firmware.
+uint32_t esperaEntreTentativas() {
+    switch (perfilVelocidade) {
+        case 0:  return 5 + (esp_random() % 45);      // 5-50 ms   (rápido, como no IoT-23)
+        case 1:  return 50 + (esp_random() % 350);    // 50-400 ms
+        default: return 300 + (esp_random() % 1700);  // 0.3-2 s   (lento / "stealth")
+    }
+}
+
 void executarPassoMalicioso() {
     IPAddress alvo;
-    // Sub-tipo 1 (brute-force): sempre o notebook. Sub-tipo 0: metade notebook,
-    // metade um bloco fora da sub-rede, que obriga o pacote a passar pelo gateway.
-    if (subTipoAtaqueEscolhido == 1 || esp_random() % 2 == 0) {
-        alvo = GATEWAY_HOTSPOT;
-    } else {
-        alvo = IPAddress(10, 77, 0, 2 + (esp_random() % 250));
-    }
-
     uint16_t porta;
-    if (subTipoAtaqueEscolhido == 1) {
-        porta = portaAlvoFixaBruteForce;
-    } else if (esp_random() % 3 == 0) {
-        porta = (uint16_t)(1024 + (esp_random() % 64000));
-    } else {
-        porta = PORTAS_COMUNS[esp_random() % QTD_PORTAS_COMUNS];
+
+    if (subTipoAtaqueEscolhido == 1) {                    // brute-force
+        alvo = GATEWAY_HOTSPOT;
+        porta = portaAlvoFixa;
+    } else if (subTipoAtaqueEscolhido == 2) {             // horizontal: mesma porta, muitos IPs
+        alvo = IPAddress(10, 77, 0, proximoHostHorizontal);
+        proximoHostHorizontal = (proximoHostHorizontal >= 250) ? 2 : proximoHostHorizontal + 1;
+        porta = portaAlvoFixa;
+    } else {                                              // misto
+        alvo = (esp_random() % 2 == 0) ? GATEWAY_HOTSPOT
+                                       : IPAddress(10, 77, 0, 2 + (esp_random() % 250));
+        porta = (esp_random() % 3 == 0) ? (uint16_t)(1024 + (esp_random() % 64000))
+                                        : PORTAS_COMUNS[esp_random() % QTD_PORTAS_COMUNS];
     }
 
     WiFiClient client;
-    Serial.printf("[MALICIOSO][sub=%d] Tentando %s:%u ...\n",
-                   subTipoAtaqueEscolhido, alvo.toString().c_str(), porta);
-
-    bool conectou = client.connect(alvo, porta, 150); // timeout curto = scan
+    bool conectou = client.connect(alvo, porta, 150);     // timeout curto = scan
     if (conectou) client.stop();
-
-    uint32_t espera = 50 + (esp_random() % 1450); // 50ms a 1500ms, aleatório
-    delay(espera);
+    delay(esperaEntreTentativas());
 }
 
 void setup() {
     Serial.begin(115200);
     delay(500);
-
     randomSeed(esp_random());
-    subTipoAtaqueEscolhido = esp_random() % 2;
-    portaAlvoFixaBruteForce = PORTAS_COMUNS[esp_random() % QTD_PORTAS_COMUNS];
+    subTipoAtaqueEscolhido = esp_random() % 3;
+    perfilVelocidade = esp_random() % 3;
+    portaAlvoFixa = PORTAS_COMUNS[esp_random() % QTD_PORTAS_COMUNS];
 
 #if MODO_ATAQUE == 1
-    Serial.println("=== FIRMWARE EM MODO: MALICIOSO / ANÔMALO ===");
-    Serial.printf("Sub-tipo sorteado nesta execução: %d\n", subTipoAtaqueEscolhido);
+    Serial.println("=== MODO: MALICIOSO (rotule PortScan) ===");
+    Serial.printf("sub-tipo=%d  velocidade=%d  porta fixa=%u\n",
+                  subTipoAtaqueEscolhido, perfilVelocidade, portaAlvoFixa);
 #else
-    Serial.println("=== FIRMWARE EM MODO: NORMAL (tráfego regular) ===");
+    Serial.println("=== MODO: NORMAL (rotule Benigno) ===");
 #endif
-
     conectarWiFi();
 }
 
@@ -135,8 +123,5 @@ void loop() {
 #else
     executarPassoNormal();
 #endif
-
-    if (WiFi.status() != WL_CONNECTED) {
-        conectarWiFi();
-    }
+    if (WiFi.status() != WL_CONNECTED) conectarWiFi();
 }
