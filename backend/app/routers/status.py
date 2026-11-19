@@ -1,7 +1,7 @@
 from fastapi import APIRouter
 
 from app.schemas import StatusResponse, HealthResponse
-from app.services import state
+from app.services import state, llm_report
 
 router = APIRouter(prefix="/api", tags=["status"])
 
@@ -15,5 +15,8 @@ def health():
 @router.get("/status", response_model=StatusResponse)
 def get_status():
     """Substitui o antigo status_rede_frontend.json: o frontend consome isto
-    via fetch() a cada poucos segundos."""
-    return state.obter_estado()
+    via fetch() a cada poucos segundos. O relatório de IA é lido na hora (snapshot),
+    então aparece no dashboard assim que a geração termina."""
+    estado = state.obter_estado()
+    estado["relatorio_ia"] = llm_report.snapshot()
+    return estado

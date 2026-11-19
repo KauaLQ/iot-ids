@@ -9,8 +9,8 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app import config
-from app.routers import status, coleta, modelo
-from app.services import sniffer, classifier
+from app.routers import status, coleta, modelo, ia
+from app.services import sniffer, classifier, llm_report
 
 _stop_event = threading.Event()
 
@@ -18,6 +18,7 @@ _stop_event = threading.Event()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     print("[STARTUP] Inicializando componentes do IoT-IDS...")
+    llm_report.log_inicial()
     if config.ENABLE_SNIFFER:
         sniffer.iniciar_sniffer_em_background(_stop_event)
     else:
@@ -26,13 +27,15 @@ async def lifespan(app: FastAPI):
     yield
     print("[SHUTDOWN] Encerrando componentes em background...")
     _stop_event.set()
+    llm_report.encerrar()
 
 
-app = FastAPI(title="IoT-IDS Backend", version="3.0.0", lifespan=lifespan)
+app = FastAPI(title="IoT-IDS Backend", version="3.1.0", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 app.include_router(status.router)
 app.include_router(coleta.router)
 app.include_router(modelo.router)
+app.include_router(ia.router)
 
 
 @app.get("/")

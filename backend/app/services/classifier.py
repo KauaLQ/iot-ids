@@ -3,6 +3,8 @@
 # MESMO código do treino (ml/features.py), roda o modelo ativo e publica em
 # app.services.state. Suporta troca de versão a quente (registry.json mudou?
 # recarrega em ~2 s) e nunca derruba o modelo em uso se o novo falhar ao carregar.
+# Os incidentes (com evidências numéricas) são entregues a app.services.llm_report,
+# que decide SE e QUANDO chamar a IA generativa.
 # ==============================================================================
 import json
 import sys
@@ -16,7 +18,7 @@ import numpy as np
 import pandas as pd
 
 from app import config
-from app.services import state
+from app.services import state, llm_report
 
 if str(config.PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(config.PROJECT_ROOT))
@@ -27,10 +29,18 @@ _M = None                          # modelo em uso (dict) — substituído atomi
 _lock_carga = threading.Lock()
 _versao_falha = None               # versão que falhou ao carregar (não repetir a cada 2 s)
 
+# Fallback estático: usado quando a IA está desativada, falhou ou ainda não respondeu.
 _MSG_NORMAL = "✔ Rede operando normalmente. Nenhuma anomalia detectada."
 _ultimo_relatorio = _MSG_NORMAL
 _ultima_assinatura = ""
 _TAIL_BYTES = 4 * 1024 * 1024
+
+_COLUNAS_BASE = ['ts', 'uid', 'id.orig_h', 'id.orig_p', 'id.resp_h', 'id.resp_p', 'proto', 'service', 'conn_state']
+# Colunas extras só para montar as evidências enviadas à IA (não vão para o feed do dashboard)
+_COLUNAS_EVIDENCIA = ['orig_bytes', 'resp_bytes', 'orig_pkts', 'resp_pkts', 'duration',
+                      'win_qtd_conexoes', 'win_ips_destino_unicos', 'win_portas_destino_unicas',
+                      'win_taxa_s0', 'win_taxa_falha']
+_COLUNAS_FEED = _COLUNAS_BASE + ['tipo_trafego', 'confianca_ia', 'status_geral', 'horario']
 
 
 # ------------------------------------------------------------------- modelo
@@ -136,7 +146,7 @@ def _processar_e_classificar(df_live: pd.DataFrame, truncado: bool, m: dict):
     pred = probas.argmax(axis=1)
     conf = probas.max(axis=1).astype(float) * 100.0
 
-    res = df[['ts', 'uid', 'id.orig_h', 'id.orig_p', 'id.resp_h', 'id.resp_p', 'proto', 'service', 'conn_state']].copy()
+    res = df[_COLUNAS_BASE + _COLUNAS_EVIDENCIA].copy()
     res['tipo_trafego'] = m['enc'].inverse_transform(pred)
     res['confianca_ia'] = np.round(conf, 2)
     # Filtro 1: confiança mínima. O rótulo bruto do modelo continua em 'tipo_trafego'.
@@ -148,6 +158,7 @@ def _processar_e_classificar(df_live: pd.DataFrame, truncado: bool, m: dict):
 
 
 def _gerar_relatorio(lista):
+    """Relatório ESTÁTICO (fallback). O relatório dinâmico vem de app.services.llm_report."""
     global _ultimo_relatorio, _ultima_assinatura
     if not lista:
         _ultima_assinatura, _ultimo_relatorio = "", _MSG_NORMAL
@@ -157,8 +168,8 @@ def _gerar_relatorio(lista):
         return _ultimo_relatorio
     a = lista[0]
     _ultimo_relatorio = (
-        f"[ALERTA SOC] Dispositivo IoT {a['ip_dispositivo']} comprometido executando "
-        f"{a['tipo_ataque']} contra {a['ip_vitima']}:{a['porta_vitima']} "
+        f"[ALERTA SOC] Dispositivo IoT {a['ip_dispositivo']} com indícios de {a['tipo_ataque']} "
+        f"contra {a['ip_vitima']}:{a['porta_vitima']} "
         f"({a['fluxos_maliciosos']} fluxos, confiança de {a['confianca_ia_pct']}%).\n"
         f"• Mitigação sugerida (Windows): netsh advfirewall firewall add rule "
         f"name=\"Bloquear_{a['ip_dispositivo']}\" dir=in action=block remoteip={a['ip_dispositivo']}\n"
@@ -167,9 +178,52 @@ def _gerar_relatorio(lista):
     return _ultimo_relatorio
 
 
-def _montar_payload(res: pd.DataFrame, versao: str) -> dict:
+# ------------------------------------------------------------------- evidências para a IA
+def _rotulo(v) -> str:
+    try:
+        f = float(v)
+        return str(int(f)) if f.is_integer() else str(v)
+    except (TypeError, ValueError):
+        return str(v)
+
+
+def _top(serie: pd.Series, n: int = 5) -> dict:
+    return {_rotulo(k): int(c) for k, c in serie.dropna().value_counts().head(n).items()}
+
+
+def _evidencias(g: pd.DataFrame) -> dict:
+    """Resumo numérico dos fluxos suspeitos de UM (dispositivo, tipo): são as mesmas
+    features que o modelo usa, o que permite à IA explicar o porquê da classificação."""
+    def num(c):
+        return pd.to_numeric(g[c], errors='coerce')
+
+    ts = num('ts')
+    blocos = ts // F.JANELA_S
+    estados = g['conn_state'].fillna('desconhecido').value_counts(normalize=True).head(4)
+    return {
+        "duracao_observada_s": round(float(ts.max() - ts.min()), 1),
+        "janelas_10s_ativas": int(blocos.nunique()),
+        "pico_fluxos_em_10s": int(blocos.value_counts().max()),
+        "protocolos": _top(g['proto'], 3),
+        "estados_conexao_pct": {str(k): round(float(v) * 100, 1) for k, v in estados.items()},
+        "servicos_identificados": _top(g['service'], 3),
+        "top_portas_destino": _top(g['id.resp_p'], 5),
+        "top_destinos": _top(g['id.resp_h'], 3),
+        "destinos_unicos": int(g['id.resp_h'].nunique()),
+        "portas_destino_unicas": int(g['id.resp_p'].nunique()),
+        "max_destinos_por_janela": int(num('win_ips_destino_unicos').max()),
+        "max_portas_por_janela": int(num('win_portas_destino_unicas').max()),
+        "taxa_s0_media_pct": round(float(num('win_taxa_s0').mean()) * 100, 1),
+        "taxa_falha_media_pct": round(float(num('win_taxa_falha').mean()) * 100, 1),
+        "bytes_enviados_medio_por_fluxo": round(float(num('orig_bytes').fillna(0).mean()), 1),
+        "pacotes_origem_medio_por_fluxo": round(float(num('orig_pkts').fillna(0).mean()), 1),
+    }
+
+
+def _montar_payload(res: pd.DataFrame, versao: str):
+    """Retorna (payload_para_o_dashboard, incidentes_com_evidencias_para_a_IA)."""
     ataques = res[res['status_geral'] == 'MALIGNO']
-    lista, total = [], 0
+    lista, incidentes, total = [], [], 0
     if not ataques.empty:
         def moda(s):
             mo = s.mode()
@@ -182,21 +236,27 @@ def _montar_payload(res: pd.DataFrame, versao: str) -> dict:
         resumo = resumo[resumo['qtd'] >= config.MIN_FLUXOS_PARA_ALERTA]
         for _, l in resumo.iterrows():
             porta = pd.to_numeric(l['porta'], errors='coerce')
-            lista.append({'ip_dispositivo': str(l['id.orig_h']), 'tipo_ataque': str(l['tipo_trafego']),
-                          'fluxos_maliciosos': int(l['qtd']), 'ip_vitima': str(l['alvo'] if l['alvo'] is not None else '-'),
-                          'porta_vitima': 0 if pd.isna(porta) else int(porta),
-                          'confianca_ia_pct': round(float(l['conf']), 1), 'ultimo_alerta': str(l['visto'])})
+            item = {'ip_dispositivo': str(l['id.orig_h']), 'tipo_ataque': str(l['tipo_trafego']),
+                    'fluxos_maliciosos': int(l['qtd']), 'ip_vitima': str(l['alvo'] if l['alvo'] is not None else '-'),
+                    'porta_vitima': 0 if pd.isna(porta) else int(porta),
+                    'confianca_ia_pct': round(float(l['conf']), 1), 'ultimo_alerta': str(l['visto'])}
+            lista.append(item)
+            if len(incidentes) < config.LLM_MAX_INCIDENTES:          # evidência só p/ quem vai à IA
+                g = ataques[(ataques['id.orig_h'] == l['id.orig_h']) & (ataques['tipo_trafego'] == l['tipo_trafego'])]
+                incidentes.append({**item, 'evidencias': _evidencias(g)})
         total = sum(a['fluxos_maliciosos'] for a in lista)
-    return {
+    distribuicao = {str(k): int(v) for k, v in res['tipo_trafego'].value_counts().items()}
+    payload = {
         "status_rede": "SOB ATAQUE" if lista else "NORMAL",
         "total_fluxos_analisados": int(len(res)),
         "total_ataques_detectados": total,
-        "distribuicao_trafego": {str(k): int(v) for k, v in res['tipo_trafego'].value_counts().items()},
+        "distribuicao_trafego": distribuicao,
         "dispositivos_atacantes": lista,
         "relatorio_llm": _gerar_relatorio(lista),
-        "feed_tempo_real": res.sort_values('ts').tail(20).iloc[::-1].fillna('-').to_dict(orient='records'),
+        "feed_tempo_real": res.sort_values('ts').tail(20).iloc[::-1][_COLUNAS_FEED].fillna('-').to_dict(orient='records'),
         "modelo_versao": versao,
     }
+    return payload, incidentes
 
 
 def _loop_classificacao(stop_event: threading.Event):
@@ -213,8 +273,16 @@ def _loop_classificacao(stop_event: threading.Event):
             else:
                 df_captura, truncado = _ler_conn_live()
                 res = _processar_e_classificar(df_captura, truncado, m) if not df_captura.empty else None
-                payload = _montar_payload(res, m['versao']) if res is not None else _payload_vazio(m['versao'])
+                if res is not None:
+                    payload, incidentes = _montar_payload(res, m['versao'])
+                    rede = {"fluxos_analisados": payload["total_fluxos_analisados"],
+                            "distribuicao_trafego": payload["distribuicao_trafego"],
+                            "versao_do_modelo": m['versao']}
+                else:
+                    payload, incidentes, rede = _payload_vazio(m['versao']), [], {}
                 state.atualizar_estado(payload)
+                # Barato e não bloqueante: a IA só é acionada se todas as proteções liberarem
+                llm_report.registrar_incidentes(incidentes, rede)
                 if config.WRITE_DEBUG_JSON:
                     try:
                         with open(config.DEBUG_JSON_PATH, 'w', encoding='utf-8') as f:

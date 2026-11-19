@@ -53,5 +53,6 @@ export function useStatus(apiBase, intervaloMs = 2000) {
     return () => clearInterval(id)
   }, [buscar, intervaloMs])
 
-  return { dados, conexao, serie, alertas }
+  // recarregar: força uma leitura imediata (usado após pedir a análise de IA)
+  return { dados, conexao, serie, alertas, recarregar: buscar }
 }

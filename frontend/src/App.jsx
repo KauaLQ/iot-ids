@@ -4,11 +4,12 @@ import { useStatus } from './hooks/useStatus'
 import Header from './components/Header'
 import Kpis from './components/Kpis'
 import { Timeline, Donut, AtacantesBar } from './components/Charts'
-import { Incidente, Historico, Feed } from './components/Panels'
+import { Historico, Feed } from './components/Panels'
+import RelatorioIA from './components/RelatorioIA'
 
 export default function App() {
   const apiBase = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000'
-  const { dados, conexao, serie, alertas } = useStatus(apiBase)
+  const { dados, conexao, serie, alertas, recarregar } = useStatus(apiBase)
 
   const ultimoAlerta = useRef(null)
   useEffect(() => {
@@ -38,11 +39,11 @@ export default function App() {
           <div className="xl:col-span-2"><Timeline serie={serie} /></div>
           <Donut distribuicao={dados?.distribuicao_trafego} />
         </section>
-        <section className="grid gap-4 lg:grid-cols-3">
+        <section className="grid gap-4 lg:grid-cols-2">
           <AtacantesBar atacantes={dados?.dispositivos_atacantes} />
-          <Incidente texto={dados?.relatorio_llm} />
           <Historico alertas={alertas} />
         </section>
+        <RelatorioIA dados={dados} apiBase={apiBase} onAtualizar={recarregar} />
         <Feed feed={dados?.feed_tempo_real || []} />
       </main>
       <ToastContainer position="bottom-right" theme="light" newestOnTop />

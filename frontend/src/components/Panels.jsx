@@ -23,16 +23,6 @@ const CAMPOS_FEED = [
   { id: 'conf', label: 'Confiança', get: (f) => f.confianca_ia, numerico: true },
 ]
 
-export function Incidente({ texto }) {
-  return (
-    <Card titulo="Resumo da análise" sub="Gerado pelo motor de IA" className="h-[22rem]">
-      <p className="whitespace-pre-line rounded-sm border-l-4 border-blue bg-page p-3 text-sm leading-relaxed [overflow-wrap:anywhere]">
-        {texto || 'Aguardando o motor de IA…'}
-      </p>
-    </Card>
-  )
-}
-
 export function Historico({ alertas }) {
   const f = useFiltro(alertas, CAMPOS_ALERTA, 3)
   return (

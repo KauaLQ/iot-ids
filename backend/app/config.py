@@ -1,11 +1,18 @@
 # ==============================================================================
 # CONFIGURAÇÃO CENTRAL — todos os caminhos do projeto num só lugar.
-# 100% pathlib; qualquer valor pode ser sobrescrito por variável de ambiente.
+# 100% pathlib; qualquer valor pode ser sobrescrito por variável de ambiente
+# (ou por um arquivo .env na raiz do projeto, carregado abaixo).
 # ==============================================================================
 import os
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+
+try:                                   # .env na raiz do projeto (opcional)
+    from dotenv import load_dotenv
+    load_dotenv(PROJECT_ROOT / ".env")
+except ImportError:
+    pass
 
 
 def _float(nome, padrao):
@@ -57,6 +64,26 @@ REPLAY = _bool("IOT_IDS_REPLAY", False)
 
 CONFIANCA_MINIMA_ATAQUE = _float("IOT_IDS_CONFIANCA_MINIMA", 75.0)
 MIN_FLUXOS_PARA_ALERTA = int(os.environ.get("IOT_IDS_MIN_FLUXOS_ALERTA", "3"))
+
+# ------------------------------- IA GENERATIVA (Google AI Studio) -------------
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip() or None
+# Configurável via .env: quando o Google aposentar um modelo, basta trocar aqui.
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.5-flash-lite").strip()
+
+LLM_HABILITADO = _bool("IOT_IDS_LLM_HABILITADO", True)
+LLM_MODO = os.environ.get("IOT_IDS_LLM_MODO", "auto").strip().lower()
+if LLM_MODO not in ("auto", "manual"):
+    LLM_MODO = "auto"
+
+LLM_ESTABILIDADE_S = _float("IOT_IDS_LLM_ESTABILIDADE_S", 6.0)
+LLM_COOLDOWN_S = _float("IOT_IDS_LLM_COOLDOWN_S", 30.0)
+LLM_MANUAL_MIN_S = _float("IOT_IDS_LLM_MANUAL_MIN_S", 15.0)
+LLM_CACHE_TTL_S = _float("IOT_IDS_LLM_CACHE_TTL_S", 900.0)
+LLM_MAX_CHAMADAS_HORA = int(os.environ.get("IOT_IDS_LLM_MAX_CHAMADAS_HORA", "20"))
+LLM_MAX_INCIDENTES = int(os.environ.get("IOT_IDS_LLM_MAX_INCIDENTES", "3"))
+LLM_TIMEOUT_S = _float("IOT_IDS_LLM_TIMEOUT_S", 25.0)
+LLM_BACKOFF_ERRO_S = _float("IOT_IDS_LLM_BACKOFF_ERRO_S", 60.0)
+LLM_BACKOFF_429_S = _float("IOT_IDS_LLM_BACKOFF_429_S", 180.0)
 
 CONN_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
 DEBUG_JSON_PATH.parent.mkdir(parents=True, exist_ok=True)
