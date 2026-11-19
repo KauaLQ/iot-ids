@@ -1,0 +1,419 @@
+{
+  "nota": "primeiro retreino",
+  "metricas": {
+    "n_teste": 17734,
+    "accuracy": 0.9778955678357957,
+    "f1_macro": 0.9806803875307558,
+    "f1_weighted": 0.9778482823563914,
+    "por_classe": {
+      "Ataque_Generico": {
+        "precision": 0.9966358284272497,
+        "recall": 0.9991568296795953,
+        "f1-score": 0.9978947368421053,
+        "support": 1186.0
+      },
+      "Benigno": {
+        "precision": 0.9946942900454775,
+        "recall": 0.9311731315042573,
+        "f1-score": 0.9618861470803811,
+        "support": 4228.0
+      },
+      "C&C": {
+        "precision": 0.970873786407767,
+        "recall": 0.9993337774816788,
+        "f1-score": 0.9848982271831911,
+        "support": 3002.0
+      },
+      "DDoS": {
+        "precision": 0.9993839835728953,
+        "recall": 0.9993839835728953,
+        "f1-score": 0.9993839835728953,
+        "support": 4870.0
+      },
+      "PortScan": {
+        "precision": 0.9407823643829695,
+        "recall": 0.9786420863309353,
+        "f1-score": 0.9593388429752067,
+        "support": 4448.0
+      },
+      "macro avg": {
+        "precision": 0.9804740505672719,
+        "recall": 0.9815379617138722,
+        "f1-score": 0.9806803875307558,
+        "support": 17734.0
+      },
+      "weighted avg": {
+        "precision": 0.9785576076688035,
+        "recall": 0.9778955678357957,
+        "f1-score": 0.9778482823563914,
+        "support": 17734.0
+      }
+    },
+    "limiar_confianca": 75.0,
+    "confianca_media_benigno": 97.49800109863281,
+    "confianca_media_ataque": 97.65202331542969,
+    "falso_alarme_benigno_pct": 2.814569536423841,
+    "deteccao_ataque_pct": 96.89767510735969,
+    "so_coletas": {
+      "n_teste": 2647,
+      "accuracy": 0.9852663392519834,
+      "f1_macro": 0.49381189222701255,
+      "f1_weighted": 0.9881962788488546,
+      "por_classe": {
+        "Ataque_Generico": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1-score": 0.0,
+          "support": 0.0
+        },
+        "Benigno": {
+          "precision": 1.0,
+          "recall": 0.9664371772805508,
+          "f1-score": 0.9829321663019693,
+          "support": 1162.0
+        },
+        "C&C": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1-score": 0.0,
+          "support": 0.0
+        },
+        "PortScan": {
+          "precision": 0.9847480106100795,
+          "recall": 1.0,
+          "f1-score": 0.9923154026060809,
+          "support": 1485.0
+        },
+        "macro avg": {
+          "precision": 0.4961870026525199,
+          "recall": 0.49160929432013767,
+          "f1-score": 0.49381189222701255,
+          "support": 2647.0
+        },
+        "weighted avg": {
+          "precision": 0.9914434438065615,
+          "recall": 0.9852663392519834,
+          "f1-score": 0.9881962788488546,
+          "support": 2647.0
+        }
+      },
+      "limiar_confianca": 75.0,
+      "confianca_media_benigno": 97.2601547241211,
+      "confianca_media_ataque": 98.83848571777344,
+      "falso_alarme_benigno_pct": 1.7211703958691909,
+      "deteccao_ataque_pct": 100.0
+    }
+  },
+  "metricas_random_forest": {
+    "n_teste": 17734,
+    "accuracy": 0.980038344423142,
+    "f1_macro": 0.9827140562888316,
+    "f1_weighted": 0.9800198114467582,
+    "por_classe": {
+      "Ataque_Generico": {
+        "precision": 1.0,
+        "recall": 0.9983136593591906,
+        "f1-score": 0.99915611814346,
+        "support": 1186.0
+      },
+      "Benigno": {
+        "precision": 0.9989906636386576,
+        "recall": 0.9363765373699149,
+        "f1-score": 0.9666707361738494,
+        "support": 4228.0
+      },
+      "C&C": {
+        "precision": 0.9730781706130393,
+        "recall": 0.9993337774816788,
+        "f1-score": 0.9860312243221035,
+        "support": 3002.0
+      },
+      "DDoS": {
+        "precision": 0.9995893223819302,
+        "recall": 0.9995893223819302,
+        "f1-score": 0.9995893223819302,
+        "support": 4870.0
+      },
+      "PortScan": {
+        "precision": 0.9428139835994821,
+        "recall": 0.9822392086330936,
+        "f1-score": 0.9621228804228144,
+        "support": 4448.0
+      },
+      "macro avg": {
+        "precision": 0.9828944280466219,
+        "recall": 0.9831705010451616,
+        "f1-score": 0.9827140562888316,
+        "support": 17734.0
+      },
+      "weighted avg": {
+        "precision": 0.98074601291841,
+        "recall": 0.980038344423142,
+        "f1-score": 0.9800198114467582,
+        "support": 17734.0
+      }
+    },
+    "limiar_confianca": 75.0,
+    "confianca_media_benigno": 95.87025343603774,
+    "confianca_media_ataque": 94.8537981285394,
+    "falso_alarme_benigno_pct": 2.507095553453169,
+    "deteccao_ataque_pct": 90.98178587294535
+  },
+  "comparacao_com_ativo": {
+    "versao": "v1",
+    "todos": {
+      "n_teste": 17734,
+      "accuracy": 0.895962557798579,
+      "f1_macro": 0.9132320047252053,
+      "f1_weighted": 0.8920437706453124,
+      "por_classe": {
+        "Ataque_Generico": {
+          "precision": 0.9785301403798513,
+          "recall": 0.9991568296795953,
+          "f1-score": 0.9887359198998749,
+          "support": 1186.0
+        },
+        "Benigno": {
+          "precision": 0.9798256537982566,
+          "recall": 0.9304635761589404,
+          "f1-score": 0.9545068543006187,
+          "support": 4228.0
+        },
+        "C&C": {
+          "precision": 0.9715025906735751,
+          "recall": 0.9993337774816788,
+          "f1-score": 0.9852216748768473,
+          "support": 3002.0
+        },
+        "DDoS": {
+          "precision": 0.7776002556318901,
+          "recall": 0.9993839835728953,
+          "f1-score": 0.8746518105849582,
+          "support": 4870.0
+        },
+        "PortScan": {
+          "precision": 0.9183802594115786,
+          "recall": 0.6526528776978417,
+          "f1-score": 0.7630437639637272,
+          "support": 4448.0
+        },
+        "macro avg": {
+          "precision": 0.9251677799790302,
+          "recall": 0.9161982089181901,
+          "f1-score": 0.9132320047252053,
+          "support": 17734.0
+        },
+        "weighted avg": {
+          "precision": 0.9073846299053575,
+          "recall": 0.895962557798579,
+          "f1-score": 0.8920437706453124,
+          "support": 17734.0
+        }
+      },
+      "limiar_confianca": 75.0,
+      "confianca_media_benigno": 97.48388671875,
+      "confianca_media_ataque": 94.5737075805664,
+      "falso_alarme_benigno_pct": 4.13907284768212,
+      "deteccao_ataque_pct": 91.0336146897675
+    },
+    "so_coletas": {
+      "n_teste": 2647,
+      "accuracy": 0.43407631280695125,
+      "f1_macro": 0.19744130383310685,
+      "f1_weighted": 0.4374039035034838,
+      "por_classe": {
+        "Ataque_Generico": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1-score": 0.0,
+          "support": 0.0
+        },
+        "Benigno": {
+          "precision": 0.9413735343383585,
+          "recall": 0.9672977624784854,
+          "f1-score": 0.9541595925297114,
+          "support": 1162.0
+        },
+        "C&C": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1-score": 0.0,
+          "support": 0.0
+        },
+        "DDoS": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1-score": 0.0,
+          "support": 0.0
+        },
+        "PortScan": {
+          "precision": 0.8928571428571429,
+          "recall": 0.016835016835016835,
+          "f1-score": 0.03304692663582287,
+          "support": 1485.0
+        },
+        "macro avg": {
+          "precision": 0.3668461354391003,
+          "recall": 0.19682655586270045,
+          "f1-score": 0.19744130383310685,
+          "support": 2647.0
+        },
+        "weighted avg": {
+          "precision": 0.9141552338662748,
+          "recall": 0.43407631280695125,
+          "f1-score": 0.4374039035034838,
+          "support": 2647.0
+        }
+      },
+      "limiar_confianca": 75.0,
+      "confianca_media_benigno": 96.19927978515625,
+      "confianca_media_ataque": 68.63648986816406,
+      "falso_alarme_benigno_pct": 1.549053356282272,
+      "deteccao_ataque_pct": 35.48821548821549
+    }
+  },
+  "dados": {
+    "fontes": [
+      "coletas",
+      "iot23"
+    ],
+    "n_treino": 54278,
+    "n_teste": 17734,
+    "por_origem_classe": {
+      "coleta/Benigno": 1591,
+      "coleta/PortScan": 5127,
+      "iot23/Ataque_Generico": 5962,
+      "iot23/Benigno": 15000,
+      "iot23/C&C": 14938,
+      "iot23/DDoS": 14394,
+      "iot23/PortScan": 15000
+    },
+    "sessoes": [
+      {
+        "nome": "20261117_234528_Benigno_192-168-137-223",
+        "rotulo": "Benigno",
+        "fluxos": 168,
+        "ip_dispositivo": "192.168.137.223",
+        "descricao": "normal sessao 1"
+      },
+      {
+        "nome": "20261118_213601_PortScan_192-168-137-135",
+        "rotulo": "PortScan",
+        "fluxos": 679,
+        "ip_dispositivo": "192.168.137.135",
+        "descricao": "sub1 vel1 porta80"
+      },
+      {
+        "nome": "20261118_214300_PortScan_192-168-137-135",
+        "rotulo": "PortScan",
+        "fluxos": 201,
+        "ip_dispositivo": "192.168.137.135",
+        "descricao": "sub2 vel2 porta3389"
+      },
+      {
+        "nome": "20261118_215137_PortScan_192-168-137-135",
+        "rotulo": "PortScan",
+        "fluxos": 188,
+        "ip_dispositivo": "192.168.137.135",
+        "descricao": "sub0 vel2 porta8883"
+      },
+      {
+        "nome": "20261118_215641_PortScan_192-168-137-135",
+        "rotulo": "PortScan",
+        "fluxos": 1481,
+        "ip_dispositivo": "192.168.137.135",
+        "descricao": "sub1 vel0 porta25"
+      },
+      {
+        "nome": "20261118_221939_PortScan_192-168-137-194",
+        "rotulo": "PortScan",
+        "fluxos": 134,
+        "ip_dispositivo": "192.168.137.194",
+        "descricao": "sub0 vel2 porta80"
+      },
+      {
+        "nome": "20261118_222344_PortScan_192-168-137-194",
+        "rotulo": "PortScan",
+        "fluxos": 959,
+        "ip_dispositivo": "192.168.137.194",
+        "descricao": "sub2 vel1 porta21"
+      },
+      {
+        "nome": "20261118_223242_PortScan_192-168-137-194",
+        "rotulo": "PortScan",
+        "fluxos": 1485,
+        "ip_dispositivo": "192.168.137.194",
+        "descricao": "sub0 vel0 porta3389"
+      },
+      {
+        "nome": "20261118_224336_Benigno_192-168-137-24",
+        "rotulo": "Benigno",
+        "fluxos": 261,
+        "ip_dispositivo": "192.168.137.24",
+        "descricao": "normal sessao 2"
+      },
+      {
+        "nome": "20261118_230635_Benigno",
+        "rotulo": "Benigno",
+        "fluxos": 1162,
+        "ip_dispositivo": null,
+        "descricao": "normal sessao 3"
+      }
+    ]
+  },
+  "parametros": {
+    "dataset_dir": "C:\\pyprojects\\iot-ids\\ml\\datasets",
+    "coletas_dir": "C:\\pyprojects\\iot-ids\\ml\\datasets\\coletas",
+    "fontes": "iot23,coletas",
+    "limite_por_classe": 15000,
+    "peso_coleta": 3.0,
+    "max_linhas": 200000,
+    "limiar": 75.0,
+    "seed": 42,
+    "ativar": false,
+    "ativar_se_melhor": false,
+    "nota": "primeiro retreino"
+  },
+  "features": {
+    "versao": 2,
+    "numericas": [
+      "duration",
+      "orig_bytes",
+      "resp_bytes",
+      "missed_bytes",
+      "orig_pkts",
+      "orig_ip_bytes",
+      "resp_pkts",
+      "resp_ip_bytes",
+      "win_qtd_conexoes",
+      "win_ips_destino_unicos",
+      "win_portas_destino_unicas",
+      "win_media_orig_bytes",
+      "win_taxa_s0",
+      "win_taxa_falha"
+    ],
+    "categoricas": [
+      "proto",
+      "service",
+      "conn_state"
+    ]
+  },
+  "classes": [
+    "Ataque_Generico",
+    "Benigno",
+    "C&C",
+    "DDoS",
+    "PortScan"
+  ],
+  "libs": {
+    "python": "3.12.10",
+    "sklearn": "1.5.2",
+    "xgboost": "2.1.4",
+    "pandas": "2.3.3",
+    "numpy": "2.5.4",
+    "joblib": "1.6.0"
+  },
+  "versao": "v2",
+  "arquivo": "model_v2.pkl",
+  "criado_em": "2026-11-18T23:32:11"
+}

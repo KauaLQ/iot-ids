@@ -1,6 +1,6 @@
 # ==============================================================================
 # BACKEND — FastAPI. Sobe sniffer + classificador em background.
-# Rodar (como Administrador, a partir de backend/):  uvicorn app.main:app --host 0.0.0.0 --port 8000
+# Rodar (como Administrador, a partir de backend/): python -m uvicorn app.main:app --host 0.0.0.0 --port 8000
 # ==============================================================================
 import threading
 from contextlib import asynccontextmanager

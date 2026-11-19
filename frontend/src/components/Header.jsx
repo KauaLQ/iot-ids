@@ -42,7 +42,7 @@ export default function Header({ dados, conexao }) {
           {online ? 'Backend conectado' : conexao === 'offline' ? 'Backend inacessível' : 'Conectando…'}
         </span>
         <span className={dados?.modelo_carregado ? 'text-sky-300' : 'text-amber-300'}>
-          {dados?.modelo_carregado ? 'Modelo ativo' : 'Modelo não carregado'}
+          {dados?.modelo_carregado ? `Modelo ${dados.modelo_versao || 'ativo'}` : 'Modelo não carregado'}
         </span>
         <p className="text-xs leading-tight text-white/60">Última leitura<br /><span className="text-sm text-white tabular-nums">{dados?.ultima_atualizacao || '—'}</span></p>
       </div>

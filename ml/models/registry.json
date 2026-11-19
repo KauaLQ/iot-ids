@@ -1,12 +1,25 @@
 {
-  "ativo": "v1",
-  "historico": [],
+  "ativo": "v2",
+  "historico": [
+    "v1"
+  ],
   "versoes": {
     "v1": {
       "criado_em": "2026-11-15T14:59:59",
       "nota": "Importado de motor_ia_ids_iot.joblib (sem métricas registradas)",
       "f1_macro": null,
       "accuracy": null
+    },
+    "v2": {
+      "criado_em": "2026-11-18T23:32:11",
+      "f1_macro": 0.9806803875307558,
+      "accuracy": 0.9778955678357957,
+      "f1_macro_coletas": 0.49381189222701255,
+      "fontes": [
+        "coletas",
+        "iot23"
+      ],
+      "nota": "primeiro retreino"
     }
   }
 }
