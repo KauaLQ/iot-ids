@@ -1,5 +1,5 @@
 """Injeta flows sintéticos de PortScan no conn_live.log para testar o relatório de IA
-sem o ESP32. Rode a partir de backend/:  python -m scripts.simular_incidente
+sem o ESP32. Rode a partir de backend/:  python -m script.simular_incidente
 O incidente fica visível por ~4 min (janela de histórico do classificador)."""
 import argparse
 import random
