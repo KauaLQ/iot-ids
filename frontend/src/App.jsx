@@ -1,52 +1,53 @@
 import { useEffect, useRef } from 'react'
-import { ToastContainer, toast } from 'react-toastify'
 import { useStatus } from './hooks/useStatus'
+import { useToast } from './components/Toast'
 import Header from './components/Header'
+import StatusBanner from './components/StatusBanner'
 import Kpis from './components/Kpis'
-import { Timeline, Donut, AtacantesBar } from './components/Charts'
+import { Timeline, Donut } from './components/Charts'
+import Dispositivos from './components/Dispositivos'
 import { Historico, Feed } from './components/Panels'
 import RelatorioIA from './components/RelatorioIA'
 
 export default function App() {
   const apiBase = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000'
-  const { dados, conexao, serie, alertas, recarregar } = useStatus(apiBase)
+  const { dados, conexao, latencia, ultimaLeitura, serie, alertas, recarregar } = useStatus(apiBase)
+  const toast = useToast()
 
   const ultimoAlerta = useRef(null)
   useEffect(() => {
     const novo = alertas[0]
     if (novo && novo.id !== ultimoAlerta.current) {
       ultimoAlerta.current = novo.id
-      toast.warn(`Possível ${novo.tipo_ataque}: ${novo.ip_dispositivo} → ${novo.ip_vitima}:${novo.porta_vitima}`, { autoClose: 8000 })
+      toast(`Possível ${novo.tipo_ataque}: ${novo.ip_dispositivo} → ${novo.ip_vitima}:${novo.porta_vitima}`,
+        { tom: 'bad', duracao: 8000 })
     }
-  }, [alertas])
+  }, [alertas, toast])
 
   const anterior = useRef('conectando')
   useEffect(() => {
-    if (conexao === 'offline' && anterior.current !== 'offline') toast.info('Sem comunicação com o backend.', { toastId: 'off' })
-    if (conexao === 'online' && anterior.current === 'offline') toast.success('Comunicação com o backend restabelecida.')
+    if (conexao === 'offline' && anterior.current !== 'offline') toast('Sem comunicação com o backend', { tom: 'warn', key: 'conexao', duracao: 5000 })
+    if (conexao === 'online' && anterior.current === 'offline') toast('Comunicação com o backend restabelecida', { tom: 'ok', key: 'conexao' })
     anterior.current = conexao
-  }, [conexao])
+  }, [conexao, toast])
 
   return (
-    <div className="min-h-screen">
-      <Header dados={dados} conexao={conexao} />
-      <main className="mx-auto max-w-[1500px] space-y-4 p-4">
-        {dados?.erro_modelo && (
-          <div className="rounded-sm border border-warn/40 bg-warn/10 p-3 text-sm text-warn">{dados.erro_modelo}</div>
-        )}
+    <div className="flex min-h-screen flex-col">
+      <Header dados={dados} conexao={conexao} latencia={latencia} ultimaLeitura={ultimaLeitura} onAtualizar={recarregar} />
+      <main className="mx-auto w-full max-w-7xl flex-1 space-y-6 px-4 py-8 sm:px-6">
+        <StatusBanner dados={dados} conexao={conexao} />
         <Kpis dados={dados} />
         <section className="grid items-stretch gap-4 xl:grid-cols-3">
           <div className="xl:col-span-2"><Timeline serie={serie} /></div>
           <Donut distribuicao={dados?.distribuicao_trafego} />
         </section>
         <section className="grid gap-4 lg:grid-cols-2">
-          <AtacantesBar atacantes={dados?.dispositivos_atacantes} />
+          <Dispositivos atacantes={dados?.dispositivos_atacantes} />
           <Historico alertas={alertas} />
         </section>
         <RelatorioIA dados={dados} apiBase={apiBase} onAtualizar={recarregar} />
         <Feed feed={dados?.feed_tempo_real || []} />
       </main>
-      <ToastContainer position="bottom-right" theme="light" newestOnTop />
     </div>
   )
 }

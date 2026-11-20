@@ -30,19 +30,23 @@ export function useFiltro(dados, campos, porPagina) {
   }
 }
 
+const CAMPO =
+  'h-8 rounded-lg border border-zinc-200 px-2.5 text-xs text-zinc-700 dark:border-zinc-800 dark:text-zinc-300'
+
 export function BarraFiltro({ f }) {
   const c = f.campos.find((x) => x.id === f.campo)
   return (
-    <div className="mb-2 flex items-center gap-2 text-sm">
+    <div className="mb-3 flex items-center gap-2">
       <select aria-label="Filtrar por" value={f.campo} onChange={(e) => f.setCampo(e.target.value)}
-        className="rounded-sm border border-line bg-white px-2 py-1">
+        className={`${CAMPO} bg-zinc-50 dark:bg-zinc-900`}>
         {f.campos.map((x) => <option key={x.id} value={x.id}>{x.label}</option>)}
       </select>
       <input aria-label="Valor do filtro" value={f.termo} onChange={(e) => f.setTermo(e.target.value)}
         placeholder={c.numerico ? 'mínimo, ex.: 90' : 'contém…'}
-        className="min-w-0 flex-1 rounded-sm border border-line px-2 py-1" />
+        className={`${CAMPO} min-w-0 flex-1 bg-white font-mono placeholder:font-sans placeholder:text-zinc-400 dark:bg-zinc-950`} />
       {f.termo && (
-        <button onClick={() => f.setTermo('')} aria-label="Limpar filtro" className="rounded-sm border border-line p-1.5 text-soft hover:bg-page">
+        <button onClick={() => f.setTermo('')} aria-label="Limpar filtro"
+          className="grid h-8 w-8 cursor-pointer place-items-center rounded-lg border border-zinc-200 text-zinc-500 transition-colors hover:bg-zinc-100 dark:border-zinc-800 dark:text-zinc-400 dark:hover:bg-zinc-800">
           <X size={14} />
         </button>
       )}
@@ -50,17 +54,18 @@ export function BarraFiltro({ f }) {
   )
 }
 
+const BTN_PAG =
+  'grid h-7 w-7 place-items-center rounded-md border border-zinc-200 text-zinc-600 dark:border-zinc-800 dark:text-zinc-300 enabled:cursor-pointer enabled:hover:bg-zinc-100 dark:enabled:hover:bg-zinc-800 disabled:opacity-40'
+
 export function Paginacao({ f }) {
   const ini = f.total === 0 ? 0 : f.atual * f.porPagina + 1
   const fim = Math.min((f.atual + 1) * f.porPagina, f.total)
   return (
-    <div className="mt-2 flex items-center justify-between text-xs text-soft">
-      <span className="tabular-nums">{ini}–{fim} de {f.total}</span>
+    <div className="mt-3 flex items-center justify-between">
+      <span className="font-mono text-[11px] tabular-nums text-zinc-400 dark:text-zinc-500">{ini}–{fim} de {f.total}</span>
       <div className="flex gap-1">
-        <button onClick={f.anterior} disabled={f.atual === 0} aria-label="Página anterior"
-          className="rounded-sm border border-line p-1 enabled:hover:bg-page disabled:opacity-40"><ChevronLeft size={14} /></button>
-        <button onClick={f.proxima} disabled={f.atual >= f.paginas - 1} aria-label="Próxima página"
-          className="rounded-sm border border-line p-1 enabled:hover:bg-page disabled:opacity-40"><ChevronRight size={14} /></button>
+        <button onClick={f.anterior} disabled={f.atual === 0} aria-label="Página anterior" className={BTN_PAG}><ChevronLeft size={14} /></button>
+        <button onClick={f.proxima} disabled={f.atual >= f.paginas - 1} aria-label="Próxima página" className={BTN_PAG}><ChevronRight size={14} /></button>
       </div>
     </div>
   )
