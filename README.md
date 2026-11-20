@@ -4,11 +4,13 @@ Sistema de detecção de intrusão para redes IoT, feito para rodar localmente, 
 
 O CyberSentinel-IoT captura os pacotes da rede dos dispositivos, transforma cada conexão no mesmo formato do `conn.log` do Zeek, classifica o comportamento de cada dispositivo com um modelo de machine learning (XGBoost) e mostra tudo num dashboard em tempo real. Quando um incidente se estabiliza, uma IA generativa (Gemini) escreve um relatório com diagnóstico técnico e ações de mitigação baseadas nas evidências numéricas daquele incidente.
 
-> ## Demonstração
->
-> ```
-> [ ESPAÇO RESERVADO PARA O GIF DO PROJETO EM FUNCIONAMENTO ]
-> ```
+---
+
+<p align="center">
+  <img src="docs/demo.gif" alt="Demonstração" width="600" />
+  <br />
+  <sub><i>Demonstração do fluxo principal em tempo real</i></sub>
+</p>
 
 ---
 
