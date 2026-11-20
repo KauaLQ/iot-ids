@@ -1,5 +1,16 @@
 # CyberSentinel-IoT
 
+<p>
+  <a href="https://www.python.org/"><img src="https://img.shields.io/badge/Python-4B79B8?style=flat-square&logo=python&logoColor=F7D358" alt="Python" /></a>
+  <a href="https://fastapi.tiangolo.com/"><img src="https://img.shields.io/badge/FastAPI-2BB6A3?style=flat-square&logo=fastapi&logoColor=white" alt="FastAPI" /></a>
+  <a href="https://scapy.net/"><img src="https://img.shields.io/badge/Scapy-3A6B8C?style=flat-square&logo=wireshark&logoColor=white" alt="Scapy" /></a>
+  <a href="https://pandas.pydata.org/"><img src="https://img.shields.io/badge/pandas-3B2E8C?style=flat-square&logo=pandas&logoColor=E3A9F5" alt="pandas" /></a>
+  <a href="https://scikit-learn.org/"><img src="https://img.shields.io/badge/scikit--learn-F2A65A?style=flat-square&logo=scikitlearn&logoColor=1F2937" alt="scikit-learn" /></a>
+  <a href="https://xgboost.readthedocs.io/"><img src="https://img.shields.io/badge/XGBoost-E88D5A?style=flat-square&logo=xgboost&logoColor=white" alt="XGBoost" /></a>
+  <a href="https://aistudio.google.com/"><img src="https://img.shields.io/badge/Google%20AI%20Studio-9B7EDE?style=flat-square&logo=googlegemini&logoColor=white" alt="Google AI Studio" /></a>
+  <a href="https://react.dev/"><img src="https://img.shields.io/badge/React-7AD7F0?style=flat-square&logo=react&logoColor=1E293B" alt="React" /></a>
+</p>
+
 Sistema de detecção de intrusão para redes IoT, feito para rodar localmente, com hardware barato e sem depender de appliances caros ou de serviços em nuvem para classificar tráfego.
 
 O CyberSentinel-IoT captura os pacotes da rede dos dispositivos, transforma cada conexão no mesmo formato do `conn.log` do Zeek, classifica o comportamento de cada dispositivo com um modelo de machine learning (XGBoost) e mostra tudo num dashboard em tempo real. Quando um incidente se estabiliza, uma IA generativa (Gemini) escreve um relatório com diagnóstico técnico e ações de mitigação baseadas nas evidências numéricas daquele incidente.
